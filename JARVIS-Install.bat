@@ -1,140 +1,176 @@
 @echo off
-setlocal EnableDelayedExpansion
 title JARVIS Installer
 color 0B
 
 :: ============================================================
 ::  J.A.R.V.I.S. ONE-FILE INSTALLER
-::  Double-click this file on any Windows PC.
-::  It installs Git, Node.js, clones the repo,
-::  installs all dependencies, creates shortcuts,
-::  and launches JARVIS. Nothing else needed.
+::  Double-click this file. That is all.
 :: ============================================================
 
-echo.
-echo   ============================================================
-echo    J.A.R.V.I.S.  -  Just A Rather Very Intelligent System
-echo    One-File Installer
-echo   ============================================================
-echo.
+:: Write the embedded PowerShell installer to a temp file
+set "PS=%TEMP%\jarvis_install_%RANDOM%.ps1"
 
-:: Run the embedded PowerShell installer
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
-"& { $ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; ^
-$INSTALL_DIR = Join-Path $env:USERPROFILE 'JARVIS'; ^
-$REPO = 'https://github.com/mercy1234544/jarvis-ai.git'; ^
-$NODE_URL = 'https://nodejs.org/dist/v20.11.1/node-v20.11.1-x64.msi'; ^
-$GIT_URL = 'https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe'; ^
-function W($m,$c='Cyan'){Write-Host '  '$m -ForegroundColor $c}; ^
-function OK($m){Write-Host '  [OK] '$m -ForegroundColor Green}; ^
-function ERR($m){Write-Host '  [!!] '$m -ForegroundColor Red}; ^
-function STEP($m){Write-Host ''; Write-Host '  >>> '$m -ForegroundColor Cyan}; ^
-STEP 'Step 1/5: Checking Git...'; ^
-$git=Get-Command git -ErrorAction SilentlyContinue; ^
-if(-not $git){ ^
-  W 'Git not found. Downloading Git for Windows...'; ^
-  $tmp=Join-Path $env:TEMP 'git-setup.exe'; ^
-  try{ Invoke-WebRequest -Uri $GIT_URL -OutFile $tmp -UseBasicParsing; ^
-  W 'Installing Git silently...'; ^
-  Start-Process $tmp -ArgumentList '/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /COMPONENTS=icons,ext\reg\shellhere,assoc,assoc_sh' -Wait; ^
-  Remove-Item $tmp -Force -ErrorAction SilentlyContinue; ^
-  $env:Path=[System.Environment]::GetEnvironmentVariable('Path','Machine')+';'+[System.Environment]::GetEnvironmentVariable('Path','User'); ^
-  $git=Get-Command git -ErrorAction SilentlyContinue; ^
-  if($git){OK 'Git installed!'}else{ERR 'Git install failed. Install from https://git-scm.com and re-run.'; Read-Host 'Press Enter'; exit 1} ^
-  }catch{ERR 'Git download failed. Check internet connection.'; Read-Host 'Press Enter'; exit 1} ^
-}else{OK ('Git: '+(& git --version))}; ^
-STEP 'Step 2/5: Checking Node.js...'; ^
-$node=Get-Command node -ErrorAction SilentlyContinue; ^
-if(-not $node){ ^
-  W 'Node.js not found. Downloading Node.js v20 LTS...'; ^
-  $tmp=Join-Path $env:TEMP 'node-setup.msi'; ^
-  try{ Invoke-WebRequest -Uri $NODE_URL -OutFile $tmp -UseBasicParsing; ^
-  W 'Installing Node.js silently...'; ^
-  Start-Process msiexec.exe -ArgumentList ('/i \"'+$tmp+'\" /quiet /norestart') -Wait; ^
-  Remove-Item $tmp -Force -ErrorAction SilentlyContinue; ^
-  $env:Path=[System.Environment]::GetEnvironmentVariable('Path','Machine')+';'+[System.Environment]::GetEnvironmentVariable('Path','User'); ^
-  $node=Get-Command node -ErrorAction SilentlyContinue; ^
-  if($node){OK ('Node.js installed: '+(& node --version))}else{ERR 'Node.js install failed. Install from https://nodejs.org and re-run.'; Read-Host 'Press Enter'; exit 1} ^
-  }catch{ERR 'Node.js download failed.'; Read-Host 'Press Enter'; exit 1} ^
-}else{OK ('Node.js: '+(& node --version))}; ^
-STEP 'Step 3/5: Downloading JARVIS...'; ^
-if(Test-Path (Join-Path $INSTALL_DIR '.git')){ ^
-  W 'JARVIS already installed. Updating...'; ^
-  Set-Location $INSTALL_DIR; ^
-  & git pull origin main --ff-only 2>&1 | Out-Null; ^
-  OK 'JARVIS updated!' ^
-}else{ ^
-  if(Test-Path $INSTALL_DIR){Remove-Item $INSTALL_DIR -Recurse -Force}; ^
-  W ('Cloning to: '+$INSTALL_DIR); ^
-  $r=& git clone $REPO $INSTALL_DIR 2>&1; ^
-  if($LASTEXITCODE -ne 0){ERR 'Clone failed. Check internet.'; Read-Host 'Press Enter'; exit 1}; ^
-  OK 'JARVIS downloaded!'; ^
-  Set-Location $INSTALL_DIR ^
-}; ^
-STEP 'Step 4/5: Installing dependencies...'; ^
-Set-Location $INSTALL_DIR; ^
-W 'Running npm install (this takes 1-2 minutes on first run)...'; ^
-$r=& npm install --no-fund --no-audit 2>&1; ^
-if($LASTEXITCODE -ne 0){ERR 'npm install failed.'; Write-Host $r; Read-Host 'Press Enter'; exit 1}; ^
-OK 'Dependencies installed!'; ^
-STEP 'Step 5/5: Creating shortcuts...'; ^
-$vbs=Join-Path $INSTALL_DIR 'JARVIS.vbs'; ^
-$vbsContent='Set WS=CreateObject(""WScript.Shell"")'+[char]10+'WS.CurrentDirectory=""'+$INSTALL_DIR+'""'+[char]10+'WS.Run ""cmd /c npm start"",0,False'; ^
-Set-Content -Path $vbs -Value $vbsContent -Encoding UTF8; ^
-$desk=[Environment]::GetFolderPath('Desktop'); ^
-$ws=New-Object -ComObject WScript.Shell; ^
-$sc=$ws.CreateShortcut((Join-Path $desk 'JARVIS.lnk')); ^
-$sc.TargetPath='wscript.exe'; ^
-$sc.Arguments=('\"'+$vbs+'\"'); ^
-$sc.WorkingDirectory=$INSTALL_DIR; ^
-$sc.Description='JARVIS AI Assistant'; ^
-$ico=Join-Path $INSTALL_DIR 'assets\icons\jarvis.ico'; ^
-if(Test-Path $ico){$sc.IconLocation=$ico}; ^
-$sc.Save(); ^
-$sm=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'; ^
-$sc2=$ws.CreateShortcut((Join-Path $sm 'JARVIS.lnk')); ^
-$sc2.TargetPath='wscript.exe'; ^
-$sc2.Arguments=('\"'+$vbs+'\"'); ^
-$sc2.WorkingDirectory=$INSTALL_DIR; ^
-$sc2.Description='JARVIS AI Assistant'; ^
-if(Test-Path $ico){$sc2.IconLocation=$ico}; ^
-$sc2.Save(); ^
-OK 'Desktop shortcut created!'; ^
-OK 'Start Menu entry created!'; ^
-Write-Host ''; ^
-Write-Host '  ============================================================' -ForegroundColor Green; ^
-Write-Host '   JARVIS INSTALLATION COMPLETE!' -ForegroundColor Green; ^
-Write-Host '  ============================================================' -ForegroundColor Green; ^
-Write-Host ''; ^
-Write-Host '   Installed to: ' -NoNewline -ForegroundColor White; ^
-Write-Host $INSTALL_DIR -ForegroundColor Cyan; ^
-Write-Host ''; ^
-Write-Host '   Launch JARVIS anytime:' -ForegroundColor White; ^
-Write-Host '   - Double-click JARVIS on your Desktop' -ForegroundColor Cyan; ^
-Write-Host '   - Search JARVIS in the Start Menu' -ForegroundColor Cyan; ^
-Write-Host '   - Hotkey: Alt+J (once running)' -ForegroundColor Cyan; ^
-Write-Host ''; ^
-Write-Host '   TIP: Add your OpenAI API key in Settings for full AI!' -ForegroundColor Yellow; ^
-Write-Host '   NOTE: JARVIS auto-updates from GitHub every time it starts.' -ForegroundColor DarkCyan; ^
-Write-Host ''; ^
-$ans=Read-Host '  Launch JARVIS now? (Y/N)'; ^
-if($ans -match '^[Yy]'){ ^
-  Write-Host '  Launching JARVIS...' -ForegroundColor Cyan; ^
-  Start-Process 'wscript.exe' -ArgumentList ('\"'+$vbs+'\"'); ^
-  Write-Host '  JARVIS is starting! Check your taskbar.' -ForegroundColor Green ^
-}; ^
-Write-Host ''; ^
-Write-Host '  Press any key to close...' -ForegroundColor DarkGray; ^
-$null=$Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') ^
-}"
+:: Use setlocal to avoid ! expansion issues in echo
+setlocal DisableDelayedExpansion
 
-if %ERRORLEVEL% NEQ 0 (
+echo.>>"%PS%"
+echo $ErrorActionPreference = 'Stop'>>"%PS%"
+echo $ProgressPreference = 'SilentlyContinue'>>"%PS%"
+echo $Host.UI.RawUI.WindowTitle = 'JARVIS Installer'>>"%PS%"
+echo.>>"%PS%"
+echo $INSTALL_DIR = Join-Path $env:USERPROFILE 'JARVIS'>>"%PS%"
+echo $REPO        = 'https://github.com/mercy1234544/jarvis-ai.git'>>"%PS%"
+echo $NODE_URL    = 'https://nodejs.org/dist/v20.11.1/node-v20.11.1-x64.msi'>>"%PS%"
+echo $GIT_URL     = 'https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe'>>"%PS%"
+echo.>>"%PS%"
+echo function Banner {>>"%PS%"
+echo     Clear-Host>>"%PS%"
+echo     Write-Host ''>>"%PS%"
+echo     Write-Host '  ============================================================' -ForegroundColor Cyan>>"%PS%"
+echo     Write-Host '   J.A.R.V.I.S.  -  Just A Rather Very Intelligent System' -ForegroundColor Cyan>>"%PS%"
+echo     Write-Host '   One-File Installer' -ForegroundColor Cyan>>"%PS%"
+echo     Write-Host '  ============================================================' -ForegroundColor Cyan>>"%PS%"
+echo     Write-Host ''>>"%PS%"
+echo }>>"%PS%"
+echo.>>"%PS%"
+echo function Step  { param($n,$t) Write-Host "  [$n/5] $t" -ForegroundColor Cyan }>>"%PS%"
+echo function OK    { param($t)    Write-Host "  [OK]  $t"  -ForegroundColor Green }>>"%PS%"
+echo function WARN  { param($t)    Write-Host "  [!!]  $t"  -ForegroundColor Yellow }>>"%PS%"
+echo function FAIL  { param($t)    Write-Host "  [XX]  $t"  -ForegroundColor Red; Read-Host 'Press Enter to exit'; exit 1 }>>"%PS%"
+echo function INFO  { param($t)    Write-Host "        $t"  -ForegroundColor DarkCyan }>>"%PS%"
+echo.>>"%PS%"
+echo Banner>>"%PS%"
+echo.>>"%PS%"
+echo Step 1 'Checking for Git...'>>"%PS%"
+echo $git = Get-Command git -ErrorAction SilentlyContinue>>"%PS%"
+echo if (-not $git) {>>"%PS%"
+echo     WARN 'Git not found. Downloading Git for Windows (~50 MB)...'>>"%PS%"
+echo     $tmp = Join-Path $env:TEMP 'git-setup.exe'>>"%PS%"
+echo     try {>>"%PS%"
+echo         Invoke-WebRequest -Uri $GIT_URL -OutFile $tmp -UseBasicParsing>>"%PS%"
+echo         INFO 'Installing Git silently...'>>"%PS%"
+echo         Start-Process $tmp -ArgumentList '/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /COMPONENTS=icons,ext\reg\shellhere,assoc,assoc_sh' -Wait -NoNewWindow>>"%PS%"
+echo         Remove-Item $tmp -Force -ErrorAction SilentlyContinue>>"%PS%"
+echo         $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User')>>"%PS%"
+echo         $git = Get-Command git -ErrorAction SilentlyContinue>>"%PS%"
+echo         if ($git) { OK ('Git installed: ' + (^& git --version)) }>>"%PS%"
+echo         else { FAIL 'Git install failed. Please install from https://git-scm.com and re-run.' }>>"%PS%"
+echo     } catch { FAIL "Git download failed. Check your internet connection." }>>"%PS%"
+echo } else { OK ('Git found: ' + (^& git --version)) }>>"%PS%"
+echo.>>"%PS%"
+echo Step 2 'Checking for Node.js...'>>"%PS%"
+echo $node = Get-Command node -ErrorAction SilentlyContinue>>"%PS%"
+echo if (-not $node) {>>"%PS%"
+echo     WARN 'Node.js not found. Downloading Node.js v20 LTS (~30 MB)...'>>"%PS%"
+echo     $tmp = Join-Path $env:TEMP 'node-setup.msi'>>"%PS%"
+echo     try {>>"%PS%"
+echo         Invoke-WebRequest -Uri $NODE_URL -OutFile $tmp -UseBasicParsing>>"%PS%"
+echo         INFO 'Installing Node.js silently...'>>"%PS%"
+echo         $msiArgs = '/i "' + $tmp + '" /quiet /norestart'>>"%PS%"
+echo         Start-Process msiexec.exe -ArgumentList $msiArgs -Wait -NoNewWindow>>"%PS%"
+echo         Remove-Item $tmp -Force -ErrorAction SilentlyContinue>>"%PS%"
+echo         $env:Path = [System.Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('Path','User')>>"%PS%"
+echo         $node = Get-Command node -ErrorAction SilentlyContinue>>"%PS%"
+echo         if ($node) { OK ('Node.js installed: ' + (^& node --version)) }>>"%PS%"
+echo         else { FAIL 'Node.js install failed. Please install from https://nodejs.org and re-run.' }>>"%PS%"
+echo     } catch { FAIL 'Node.js download failed. Check your internet connection.' }>>"%PS%"
+echo } else { OK ('Node.js found: ' + (^& node --version)) }>>"%PS%"
+echo.>>"%PS%"
+echo Step 3 'Downloading JARVIS files...'>>"%PS%"
+echo if (Test-Path (Join-Path $INSTALL_DIR '.git')) {>>"%PS%"
+echo     INFO 'JARVIS already installed. Pulling latest update...'>>"%PS%"
+echo     Set-Location $INSTALL_DIR>>"%PS%"
+echo     ^& git pull origin main --ff-only 2^>^&1 ^| Out-Null>>"%PS%"
+echo     OK 'JARVIS updated to latest version!'>>"%PS%"
+echo } else {>>"%PS%"
+echo     if (Test-Path $INSTALL_DIR) { Remove-Item $INSTALL_DIR -Recurse -Force }>>"%PS%"
+echo     INFO "Cloning to: $INSTALL_DIR">>"%PS%"
+echo     ^& git clone $REPO $INSTALL_DIR 2^>^&1>>"%PS%"
+echo     if ($LASTEXITCODE -ne 0) { FAIL 'Clone failed. Check your internet connection.' }>>"%PS%"
+echo     OK 'JARVIS files downloaded!'>>"%PS%"
+echo     Set-Location $INSTALL_DIR>>"%PS%"
+echo }>>"%PS%"
+echo.>>"%PS%"
+echo Step 4 'Installing dependencies (1-2 min first time)...'>>"%PS%"
+echo Set-Location $INSTALL_DIR>>"%PS%"
+echo $result = ^& npm install --no-fund --no-audit 2^>^&1>>"%PS%"
+echo if ($LASTEXITCODE -ne 0) {>>"%PS%"
+echo     Write-Host $result>>"%PS%"
+echo     FAIL 'npm install failed.'>>"%PS%"
+echo }>>"%PS%"
+echo OK 'All dependencies installed!'>>"%PS%"
+echo.>>"%PS%"
+echo Step 5 'Creating shortcuts...'>>"%PS%"
+echo $vbs = Join-Path $INSTALL_DIR 'JARVIS.vbs'>>"%PS%"
+echo $vbsContent = 'Set WS = CreateObject("WScript.Shell")' + [char]10>>"%PS%"
+echo $vbsContent += 'WS.CurrentDirectory = "' + $INSTALL_DIR + '"' + [char]10>>"%PS%"
+echo $vbsContent += 'WS.Run "cmd /c npm start", 0, False' + [char]10>>"%PS%"
+echo $vbsContent += 'Set WS = Nothing'>>"%PS%"
+echo Set-Content -Path $vbs -Value $vbsContent -Encoding UTF8>>"%PS%"
+echo.>>"%PS%"
+echo $desktop = [Environment]::GetFolderPath('Desktop')>>"%PS%"
+echo $ws = New-Object -ComObject WScript.Shell>>"%PS%"
+echo $sc = $ws.CreateShortcut((Join-Path $desktop 'JARVIS.lnk'))>>"%PS%"
+echo $sc.TargetPath       = 'wscript.exe'>>"%PS%"
+echo $sc.Arguments        = '"' + $vbs + '"'>>"%PS%"
+echo $sc.WorkingDirectory = $INSTALL_DIR>>"%PS%"
+echo $sc.Description      = 'JARVIS AI Desktop Assistant'>>"%PS%"
+echo $ico = Join-Path $INSTALL_DIR 'assets\icons\jarvis.ico'>>"%PS%"
+echo if (Test-Path $ico) { $sc.IconLocation = $ico }>>"%PS%"
+echo $sc.Save()>>"%PS%"
+echo.>>"%PS%"
+echo $sm = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'>>"%PS%"
+echo $sc2 = $ws.CreateShortcut((Join-Path $sm 'JARVIS.lnk'))>>"%PS%"
+echo $sc2.TargetPath       = 'wscript.exe'>>"%PS%"
+echo $sc2.Arguments        = '"' + $vbs + '"'>>"%PS%"
+echo $sc2.WorkingDirectory = $INSTALL_DIR>>"%PS%"
+echo $sc2.Description      = 'JARVIS AI Desktop Assistant'>>"%PS%"
+echo if (Test-Path $ico) { $sc2.IconLocation = $ico }>>"%PS%"
+echo $sc2.Save()>>"%PS%"
+echo.>>"%PS%"
+echo OK 'Desktop shortcut created!'>>"%PS%"
+echo OK 'Start Menu entry created!'>>"%PS%"
+echo.>>"%PS%"
+echo Write-Host ''>>"%PS%"
+echo Write-Host '  ============================================================' -ForegroundColor Green>>"%PS%"
+echo Write-Host '   JARVIS INSTALLATION COMPLETE!' -ForegroundColor Green>>"%PS%"
+echo Write-Host '  ============================================================' -ForegroundColor Green>>"%PS%"
+echo Write-Host ''>>"%PS%"
+echo Write-Host "   Installed to: $INSTALL_DIR" -ForegroundColor Cyan>>"%PS%"
+echo Write-Host ''>>"%PS%"
+echo Write-Host '   Launch JARVIS anytime:' -ForegroundColor White>>"%PS%"
+echo Write-Host '   - Double-click JARVIS on your Desktop' -ForegroundColor Cyan>>"%PS%"
+echo Write-Host '   - Search JARVIS in the Start Menu' -ForegroundColor Cyan>>"%PS%"
+echo Write-Host '   - Hotkey: Alt+J (once running)' -ForegroundColor Cyan>>"%PS%"
+echo Write-Host ''>>"%PS%"
+echo Write-Host '   TIP: Add your OpenAI API key in Settings for full AI chat!' -ForegroundColor Yellow>>"%PS%"
+echo Write-Host '   NOTE: JARVIS auto-updates from GitHub on every launch.' -ForegroundColor DarkCyan>>"%PS%"
+echo Write-Host ''>>"%PS%"
+echo.>>"%PS%"
+echo $ans = Read-Host '  Launch JARVIS now? (Y/N)'>>"%PS%"
+echo if ($ans -match '^^[Yy]') {>>"%PS%"
+echo     Write-Host '  Launching JARVIS...' -ForegroundColor Cyan>>"%PS%"
+echo     Start-Process 'wscript.exe' -ArgumentList ('"' + $vbs + '"')>>"%PS%"
+echo     Write-Host '  JARVIS is starting! Check your taskbar.' -ForegroundColor Green>>"%PS%"
+echo }>>"%PS%"
+echo.>>"%PS%"
+echo Write-Host ''>>"%PS%"
+echo Write-Host '  Press any key to close this installer...' -ForegroundColor DarkGray>>"%PS%"
+echo $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')>>"%PS%"
+echo.>>"%PS%"
+
+endlocal
+
+:: Execute the PowerShell script
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%PS%"
+set RESULT=%ERRORLEVEL%
+
+:: Cleanup temp file
+if exist "%PS%" del /f /q "%PS%"
+
+if %RESULT% NEQ 0 (
   echo.
-  echo   PowerShell failed. Trying fallback method...
-  echo.
-  echo   Please make sure you have internet access and try again.
-  echo   If the problem persists, install Node.js from https://nodejs.org
-  echo   then run: git clone https://github.com/mercy1234544/jarvis-ai.git
-  echo.
+  echo   Installation failed. See error above.
+  echo   Ensure you have internet access and try again.
   pause
 )
