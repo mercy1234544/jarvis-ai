@@ -1,0 +1,32 @@
+{
+  "name": "jarvis-ai",
+  "version": "1.0.0",
+  "description": "JARVIS - Just A Rather Very Intelligent System",
+  "main": "src/main/main.js",
+  "author": "mercy1234544",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "^33.3.1",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.mercy1234544.jarvis",
+    "productName": "JARVIS",
+    "directories": { "output": "dist" },
+    "files": ["src/**/*", "assets/**/*", "package.json"],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "assets/icons/jarvis.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "JARVIS"
+    }
+  }
+}

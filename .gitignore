@@ -1,0 +1,9 @@
+node_modules/
+dist/
+out/
+.env
+*.log
+.DS_Store
+Thumbs.db
+jarvis-config.json
+last-commit.txt
