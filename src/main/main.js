@@ -190,17 +190,32 @@ async function boot() {
   if(splash&&!splash.isDestroyed()) splash.close();
   showWin();
 
-  // System monitor
-  setInterval(()=>{
-    if(win&&!win.isDestroyed()&&win.isVisible()){
-      const t=os.totalmem(), f=os.freemem();
-      win.webContents.send('stats',{
-        cpu: Math.min(100,Math.round((os.loadavg()[0]/os.cpus().length)*100)),
-        ram: Math.round(((t-f)/t)*100),
-        uptime: Math.floor(os.uptime()/60)
+  // System monitor — use wmic on Windows for real CPU, loadavg on Linux/Mac
+  let lastCpu = 0;
+  function getCpuUsage(cb) {
+    if (process.platform === 'win32') {
+      exec('wmic cpu get loadpercentage /value', { timeout: 3000 }, (err, out) => {
+        if (err) return cb(lastCpu);
+        const m = out.match(/LoadPercentage=(\d+)/);
+        lastCpu = m ? parseInt(m[1]) : lastCpu;
+        cb(lastCpu);
       });
+    } else {
+      const load = os.loadavg()[0];
+      const cores = os.cpus().length;
+      lastCpu = Math.min(100, Math.round((load / cores) * 100));
+      cb(lastCpu);
     }
-  },2000);
+  }
+  setInterval(()=>{
+    if(!win||win.isDestroyed()||!win.isVisible()) return;
+    const t=os.totalmem(), f=os.freemem();
+    const ram = Math.round(((t-f)/t)*100);
+    const uptime = Math.floor(os.uptime()/60);
+    getCpuUsage(cpu => {
+      win.webContents.send('stats', { cpu, ram, uptime });
+    });
+  },3000);
 
   log('JARVIS ready');
 }
