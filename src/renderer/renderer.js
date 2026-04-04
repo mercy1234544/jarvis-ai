@@ -186,70 +186,53 @@ function startStats() {
 }
 
 // ── VOICE ENGINE ──────────────────────────────────────────────────────────────
-// Uses continuous=true so the recognizer stays open.
-// Fixed: Improved wake word detection and command processing.
 let preferredVoice = null;
-let _voiceActive = false;    // true when voice mode is on
-let _voicePaused = false;    // true while JARVIS is speaking
-let _lastProcessedText = ''; // prevent double-processing same result
-
-
-// ── AUDIO VISUALIZER ──────────────────────────────────────────────────────────
-let audioCtx = null;
-let analyser = null;
-let micStream = null;
-let visualizerActive = false;
+let _voiceActive = false;
+let _voicePaused = false;
+let _lastProcessedText = '';
+let _interimTranscript = '';
+let _forceProcessTimer = null;
+let _audioCtx = null;
+let _analyser = null;
+let _micStream = null;
+let _visualizerActive = false;
 
 async function startVisualizer() {
-  if (visualizerActive) return;
+  if (_visualizerActive) return;
   try {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const source = audioCtx.createMediaStreamSource(micStream);
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 32;
-    source.connect(analyser);
-    visualizerActive = true;
-    console.log('Audio visualizer started');
+    if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    _micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const source = _audioCtx.createMediaStreamSource(_micStream);
+    _analyser = _audioCtx.createAnalyser();
+    _analyser.fftSize = 32;
+    source.connect(_analyser);
+    _visualizerActive = true;
     updateVisualizer();
-  } catch (e) {
-    console.warn('Visualizer error:', e);
-  }
+  } catch (e) { console.warn('Visualizer error:', e); }
 }
 
 function stopVisualizer() {
-  visualizerActive = false;
-  if (micStream) {
-    micStream.getTracks().forEach(t => t.stop());
-    micStream = null;
-  }
-  console.log('Audio visualizer stopped');
+  _visualizerActive = false;
+  if (_micStream) { _micStream.getTracks().forEach(t => t.stop()); _micStream = null; }
 }
 
 function updateVisualizer() {
-  if (!visualizerActive || !analyser) return;
-  const data = new Uint8Array(analyser.frequencyBinCount);
-  analyser.getByteFrequencyData(data);
-  
-  // Calculate average volume
-  let sum = 0;
-  for (let i = 0; i < data.length; i++) sum += data[i];
+  if (!_visualizerActive || !_analyser) return;
+  const data = new Uint8Array(_analyser.frequencyBinCount);
+  _analyser.getByteFrequencyData(data);
+  let sum = 0; for (let i = 0; i < data.length; i++) sum += data[i];
   const avg = sum / data.length;
-  
-  // Update UI (Arc Reactor pulse or Net Bars)
   const bars = document.querySelectorAll('.nb');
   if (bars.length > 0) {
     bars.forEach((b, i) => {
       const val = data[i % data.length] / 255 * 100;
       b.style.height = Math.max(10, val) + '%';
-      b.style.background = avg > 30 ? 'var(--p)' : 'rgba(0,180,255,0.3)';
+      b.style.background = avg > 20 ? 'var(--p)' : 'rgba(0,180,255,0.3)';
     });
   }
-  
-  if (avg > 20 && voiceTranscript && voiceTranscript.textContent === 'Listening...') {
+  if (avg > 15 && voiceTranscript && voiceTranscript.textContent === 'Listening...') {
     voiceTranscript.textContent = 'Hearing audio...';
   }
-
   requestAnimationFrame(updateVisualizer);
 }
 
@@ -261,48 +244,24 @@ function setupVoice() {
     return;
   }
 
-
-let _interimTranscript = '';
-let _forceProcessTimer = null;
-
-function _clearForceTimer() {
-  if (_forceProcessTimer) { clearTimeout(_forceProcessTimer); _forceProcessTimer = null; }
-}
-
-function _startForceTimer() {
-  _clearForceTimer();
-  _forceProcessTimer = setTimeout(() => {
-    if (_interimTranscript.trim() && !_voicePaused) {
-      console.log('Force processing interim transcript:', _interimTranscript);
-      const text = _interimTranscript.trim();
-      _interimTranscript = '';
-      _pauseAndProcess(null, text);
-    }
-  }, 3500); // 3.5 seconds of silence/no final result
-}
-
-function createRec() {
+  function createRec() {
     const r = new SR();
     r.continuous = true;
     r.interimResults = true;
-    // Try to detect system language or fallback to en-US
-    r.lang = navigator.language || 'en-US'; 
-    r.maxAlternatives = 3; // Allow more alternatives for better matching
+    r.lang = navigator.language || 'en-US';
+    r.maxAlternatives = 3;
 
-
-    r.onstart = () => { _clearForceTimer(); _interimTranscript = '';
-      console.log('Speech Recognition started');
+    r.onstart = () => {
       _voicePaused = false;
       voiceState = 'listening';
       if (micBtn) micBtn.classList.add('recording');
       if (micIcon) micIcon.textContent = '\u23F9';
       if (voiceTranscript) voiceTranscript.textContent = 'Listening...';
       setState('listening');
-      startVisualizer(); // Start visualizer to show mic activity
+      startVisualizer();
     };
 
     r.onresult = (e) => {
-      console.log('Speech result received:', e.results.length);
       if (_voicePaused) return;
       let final = '', interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -310,45 +269,53 @@ function createRec() {
         if (e.results[i].isFinal) final += t;
         else interim += t;
       }
-      
+      _interimTranscript = interim || final;
       if (interim && voiceTranscript) voiceTranscript.textContent = interim + '...';
+      if (interim) {
+        if (_forceProcessTimer) clearTimeout(_forceProcessTimer);
+        _forceProcessTimer = setTimeout(() => {
+          if (_interimTranscript.trim() && !_voicePaused) {
+            const text = _interimTranscript.trim();
+            _interimTranscript = '';
+            _pauseAndProcess(null, text);
+          }
+        }, 3000);
+      }
       if (!final) return;
-
+      if (_forceProcessTimer) clearTimeout(_forceProcessTimer);
       const text = final.trim();
       if (text === _lastProcessedText) return;
       _lastProcessedText = text;
-      
       if (voiceTranscript) voiceTranscript.textContent = text;
       const lc = text.toLowerCase();
-
       if (cfg.wakeWordEnabled) {
-        if (lc.includes('hey jarvis') || lc.includes('jarvis') || lc.includes('service') || lc.includes('travis')) {
-          // Extract command after wake word
-          let cmd = text.replace(/hey jarvis/gi, '').replace(/jarvis/gi, '').trim();
-          // Remove leading punctuation if any
-          cmd = cmd.replace(/^[\s,.?!]+|[\s,.?!]+$/g, '');
-          _pauseAndProcess(cmd || null, text);
+        const wakeWords = ['hey jarvis', 'jarvis', 'service', 'travis', 'javis', 'garvis', 'hello jarvis'];
+        let found = false;
+        for (const w of wakeWords) {
+          if (lc.includes(w)) {
+            found = true;
+            let cmd = text.toLowerCase().split(w)[1] || '';
+            cmd = cmd.replace(/^[\s,.?!]+|[\s,.?!]+$/g, '').trim();
+            _pauseAndProcess(cmd || null, text);
+            break;
+          }
         }
       } else {
         _pauseAndProcess(null, text);
       }
     };
 
-    r.onerror = (e) => { _clearForceTimer();
-      console.warn('Voice error:', e.error); _voicePaused = false;
-      if (e.error === 'not-allowed') {
-        stopVoiceMode();
-        return;
-      }
+    r.onerror = (e) => {
+      console.warn('Voice error:', e.error);
+      _voicePaused = false;
+      if (e.error === 'not-allowed') { stopVoiceMode(); return; }
       if (_voiceActive && !_voicePaused) setTimeout(() => _restartRec(), 800);
     };
 
-    r.onend = () => { _clearForceTimer();
-      console.log('Speech Recognition ended');
-      if (_voiceActive && !_voicePaused) {
-        setTimeout(() => _restartRec(), 500);
-      } else if (!_voiceActive) {
-        stopVisualizer(); // Stop visualizer when voice mode is off
+    r.onend = () => {
+      if (_voiceActive && !_voicePaused) setTimeout(() => _restartRec(), 500);
+      else if (!_voiceActive) {
+        stopVisualizer();
         if (micBtn) micBtn.classList.remove('recording');
         if (micIcon) micIcon.textContent = '\uD83C\uDF99';
         setState('idle');
@@ -368,14 +335,10 @@ function createRec() {
     _voicePaused = true;
     voiceState = 'processing';
     try { if (voiceRec) voiceRec.abort(); } catch(e) {}
-    
     if (wakeCmd === null && cfg.wakeWordEnabled) {
       const ack = 'Yes, Sir?';
       addMsg('jarvis', ack);
-      speak(ack, () => {
-        _voicePaused = false; // CRITICAL: must unpause before restart
-        if (_voiceActive) _restartRec();
-      });
+      speak(ack, () => { _voicePaused = false; if (_voiceActive) _restartRec(); });
     } else {
       const input = wakeCmd !== null ? wakeCmd : rawText;
       processInput(input);
@@ -399,6 +362,7 @@ function stopVoiceMode() {
   _voicePaused = false;
   voiceState = 'idle';
   try { if (voiceRec) voiceRec.abort(); } catch(e) {}
+  stopVisualizer();
   if (micBtn) micBtn.classList.remove('recording');
   if (micIcon) micIcon.textContent = '\uD83C\uDF99';
   if (voicePill) { voicePill.textContent = 'VOICE OFF'; voicePill.classList.remove('active'); }
