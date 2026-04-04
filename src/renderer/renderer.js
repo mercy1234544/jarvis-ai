@@ -186,19 +186,14 @@ function startStats() {
 }
 
 // ── VOICE ENGINE ──────────────────────────────────────────────────────────────
-// Full conversation loop:
-//   1. User clicks mic OR says "Hey JARVIS"
-//   2. Mic starts, JARVIS listens
-//   3. User speaks → mic stops immediately
-//   4. JARVIS processes and responds
-//   5. JARVIS speaks the response (mic is OFF during this)
-//   6. After speaking, mic restarts automatically (if continuous mode)
-
+// Uses continuous=true so the recognizer stays open (no instant onend loop).
+// Single persistent recognizer — recreated only when explicitly needed.
 let preferredVoice = null;
+let _voiceActive = false;    // true when voice mode is on
+let _voicePaused = false;    // true while JARVIS is speaking
 
 function setupVoice() {
   loadPreferredVoice();
-
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) {
     if (voicePill) { voicePill.textContent = 'VOICE N/A'; voicePill.style.color = '#ff4444'; }
@@ -206,26 +201,24 @@ function setupVoice() {
     return;
   }
 
-  function buildRec() {
+  function createRec() {
     const r = new SR();
-    r.continuous = false;
+    r.continuous = true;        // Stay open — no instant onend loop
     r.interimResults = true;
     r.lang = 'en-US';
     r.maxAlternatives = 1;
-    let recStartTime = 0;
-    let gotResult = false;
 
     r.onstart = () => {
-      recStartTime = Date.now();
-      gotResult = false;
+      _voicePaused = false;
       voiceState = 'listening';
       if (micBtn) micBtn.classList.add('recording');
-      if (micIcon) micIcon.textContent = '\u23F9'; // stop square
+      if (micIcon) micIcon.textContent = '\u23F9';
       if (voiceTranscript) voiceTranscript.textContent = 'Listening...';
       setState('listening');
     };
 
     r.onresult = (e) => {
+      if (_voicePaused) return; // JARVIS is speaking — ignore
       let final = '', interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const t = e.results[i][0].transcript;
@@ -233,96 +226,101 @@ function setupVoice() {
         else interim += t;
       }
       if (interim && voiceTranscript) voiceTranscript.textContent = interim + '...';
-      if (final) {
-        gotResult = true;
-        if (voiceTranscript) voiceTranscript.textContent = final.trim();
-        const lc = final.trim().toLowerCase();
-        // Stop mic immediately — don't let it pick up JARVIS speaking
-        voiceState = 'processing';
-        try { r.stop(); } catch(ex) {}
+      if (!final) return;
 
-        if (voiceContinuous && cfg.wakeWordEnabled) {
-          // Wake word mode: only respond if "hey jarvis" or "jarvis" is said
-          if (lc.includes('hey jarvis') || lc.includes('jarvis')) {
-            const cmd = lc.replace(/hey jarvis|jarvis/gi, '').trim();
-            if (cmd) {
-              processInput(cmd);
-            } else {
-              const ack = 'Yes, Sir?';
-              addMsg('jarvis', ack);
-              speakAndResume(ack);
-            }
-          } else {
-            // Not a wake word — go back to listening
-            voiceState = 'idle';
-            if (voiceContinuous) setTimeout(resumeListening, 300);
-          }
-        } else {
-          // Normal mode: process whatever was said
-          processInput(final.trim());
+      if (voiceTranscript) voiceTranscript.textContent = final.trim();
+      const lc = final.trim().toLowerCase();
+
+      if (cfg.wakeWordEnabled) {
+        if (lc.includes('hey jarvis') || lc.includes('jarvis')) {
+          const cmd = lc.replace(/hey jarvis|jarvis/gi, '').trim();
+          _pauseAndProcess(cmd || null, final.trim());
         }
+        // else: not a wake word — keep listening silently
+      } else {
+        _pauseAndProcess(null, final.trim());
+      }
+    };
+
+    r.onerror = (e) => {
+      console.warn('Voice error:', e.error);
+      if (e.error === 'not-allowed') {
+        if (voicePill) { voicePill.textContent = 'MIC BLOCKED'; voicePill.style.color = '#ff4444'; }
+        showToast('Microphone access denied. Please allow mic access.', 5000);
+        stopVoiceMode();
+        return;
+      }
+      // no-speech / aborted — restart recognizer if still active
+      if (_voiceActive && !_voicePaused) {
+        setTimeout(() => _restartRec(), 800);
       }
     };
 
     r.onend = () => {
       if (micBtn) micBtn.classList.remove('recording');
-      if (micIcon) micIcon.textContent = '\uD83C\uDF99'; // mic emoji
-      voiceRecording = false;
-
-      if (voiceState === 'listening') {
-        // Ended without a result (timeout / no-speech)
-        voiceState = 'idle';
-        if (!isProcessing) setState('idle');
-        if (voiceContinuous) {
-          // Prevent instant loop: only restart if mic ran for at least 1 second
-          const elapsed = Date.now() - recStartTime;
-          const minRunTime = 1000;
-          const delay = gotResult ? 600 : Math.max(1000, minRunTime - elapsed + 300);
-          if (_resumeTimer) clearTimeout(_resumeTimer);
-          _resumeTimer = setTimeout(resumeListening, delay);
-        }
-      }
-      // If voiceState is 'processing' or 'speaking', resumeListening will be called by speakAndResume
-    };
-
-    r.onerror = (e) => {
-      if (micBtn) micBtn.classList.remove('recording');
       if (micIcon) micIcon.textContent = '\uD83C\uDF99';
       voiceRecording = false;
-
-      if (e.error === 'not-allowed') {
-        if (voicePill) { voicePill.textContent = 'MIC BLOCKED'; voicePill.style.color = '#ff4444'; }
-        showToast('Microphone access denied. Please allow mic access.', 5000);
-        voiceContinuous = false;
-        voiceState = 'idle';
+      // If still active and not paused — browser killed it, restart
+      if (_voiceActive && !_voicePaused) {
+        setTimeout(() => _restartRec(), 500);
+      } else if (!_voiceActive) {
         setState('idle');
-        return;
-      }
-
-      if (e.error !== 'no-speech' && e.error !== 'aborted') {
-        setState('error');
-        setTimeout(() => setState('idle'), 1500);
-      } else {
-        if (!isProcessing) setState('idle');
-      }
-
-      if (voiceState === 'listening') voiceState = 'idle';
-      if (voiceContinuous && voiceState === 'idle') {
-        // For no-speech / aborted errors, wait longer before restarting
-        const delay = (e.error === 'no-speech' || e.error === 'aborted') ? 1500 : 800;
-        if (_resumeTimer) clearTimeout(_resumeTimer);
-        _resumeTimer = setTimeout(resumeListening, delay);
       }
     };
 
     return r;
   }
 
-  // Store builder so we can recreate recognizer each time (Chromium bug workaround)
-  window._buildVoiceRec = buildRec;
-  voiceRec = buildRec();
+  function _restartRec() {
+    if (!_voiceActive || _voicePaused) return;
+    try { if (voiceRec) voiceRec.abort(); } catch(e) {}
+    voiceRec = createRec();
+    try { voiceRec.start(); } catch(e) { console.warn('rec restart:', e.message); }
+  }
 
+  function _pauseAndProcess(wakeCmd, rawText) {
+    _voicePaused = true;
+    voiceState = 'processing';
+    try { if (voiceRec) voiceRec.abort(); } catch(e) {}
+    if (micBtn) micBtn.classList.remove('recording');
+    if (micIcon) micIcon.textContent = '\uD83C\uDF99';
+
+    if (wakeCmd === null && cfg.wakeWordEnabled) {
+      // Wake word with no command — just acknowledge
+      const ack = 'Yes, Sir?';
+      addMsg('jarvis', ack);
+      speak(ack, () => {
+        voiceState = 'idle';
+        if (_voiceActive) setTimeout(() => _restartRec(), 600);
+      });
+    } else {
+      const input = wakeCmd !== null ? wakeCmd : rawText;
+      processInput(input);
+    }
+  }
+
+  // Expose for speakAndResume
+  window._voiceResumeAfterSpeak = function() {
+    voiceState = 'idle';
+    if (_voiceActive) setTimeout(() => _restartRec(), 600);
+    else setState('idle');
+  };
+
+  window._buildVoiceRec = createRec;
+  voiceRec = createRec();
   if (voicePill) { voicePill.textContent = 'VOICE READY'; voicePill.classList.add('active'); }
+}
+
+function stopVoiceMode() {
+  _voiceActive = false;
+  _voicePaused = false;
+  voiceContinuous = false;
+  voiceState = 'idle';
+  voiceRecording = false;
+  try { if (voiceRec) voiceRec.abort(); } catch(e) {}
+  if (micBtn) micBtn.classList.remove('recording');
+  if (micIcon) micIcon.textContent = '\uD83C\uDF99';
+  setState('idle');
 }
 
 function loadPreferredVoice() {
@@ -352,33 +350,13 @@ function loadPreferredVoice() {
   setTimeout(pick, 2000);
 }
 
-let _resumeTimer = null;
-function resumeListening() {
-  if (!voiceContinuous) return;
-  if (voiceState === 'processing' || voiceState === 'speaking') return;
-  if (voiceState === 'listening') return;
-  // Cancel any pending resume to prevent double-starts
-  if (_resumeTimer) { clearTimeout(_resumeTimer); _resumeTimer = null; }
-  // Recreate recognizer each time to avoid Chromium's 'already started' bug
-  if (window._buildVoiceRec) voiceRec = window._buildVoiceRec();
-  voiceState = 'idle';
-  try {
-    voiceRec.start();
-  } catch(e) {
-    console.warn('resumeListening error:', e.message);
-    if (voiceContinuous) _resumeTimer = setTimeout(resumeListening, 1500);
-  }
-}
-
 function startMicOnce() {
-  // Single-shot mic press (not continuous mode)
   if (!voiceRec) { showToast('Voice not available'); return; }
+  if (_voiceActive) { stopVoiceMode(); return; }
   if (voiceRecording) {
-    // Stop it
     voiceRecording = false;
-    voiceContinuous = false;
     voiceState = 'idle';
-    try { voiceRec.stop(); } catch(e) {}
+    try { voiceRec.abort(); } catch(e) {}
     if (micBtn) micBtn.classList.remove('recording');
     if (micIcon) micIcon.textContent = '\uD83C\uDF99';
     setState('idle');
@@ -389,34 +367,21 @@ function startMicOnce() {
   if (window._buildVoiceRec) voiceRec = window._buildVoiceRec();
   try { voiceRec.start(); } catch(e) { console.warn('mic start:', e); voiceRecording = false; }
 }
-
 function activateContinuousVoice() {
+  _voiceActive = true;
+  _voicePaused = false;
   voiceContinuous = true;
   voiceState = 'idle';
-  // Small delay before first start — lets the browser settle permissions
-  setTimeout(() => {
-    if (!voiceContinuous) return;
-    if (window._buildVoiceRec) voiceRec = window._buildVoiceRec();
-    try { voiceRec.start(); } catch(e) { console.warn('continuous start:', e); }
-  }, 300);
+  if (window._buildVoiceRec) voiceRec = window._buildVoiceRec();
+  try { voiceRec.start(); } catch(e) { console.warn('continuous start:', e); }
 }
-
 function deactivateContinuousVoice() {
-  voiceContinuous = false;
-  voiceState = 'idle';
-  voiceRecording = false;
-  if (voiceRec) { try { voiceRec.stop(); } catch(e) {} }
-  if (micBtn) micBtn.classList.remove('recording');
-  if (micIcon) micIcon.textContent = '\uD83C\uDF99';
-  setState('idle');
+  stopVoiceMode();
 }
-
-// Speak text, then resume listening if in continuous mode
 function speakAndResume(text, cb) {
   speak(text, () => {
-    voiceState = 'idle';
     if (cb) cb();
-    if (voiceContinuous) { if (_resumeTimer) clearTimeout(_resumeTimer); _resumeTimer = setTimeout(resumeListening, 700); }
+    if (window._voiceResumeAfterSpeak) window._voiceResumeAfterSpeak();
   });
 }
 
@@ -451,7 +416,7 @@ async function speakElevenLabs(text, cb) {
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
-    audio.onended = () => { URL.revokeObjectURL(url); setState('idle'); if (cb) cb(); };
+    audio.onended = () => { URL.revokeObjectURL(url); _voicePaused = false; setState('idle'); if (cb) cb(); };
     audio.onerror = () => { URL.revokeObjectURL(url); speakBrowser(text, cb); };
     await audio.play();
   } catch(e) {
@@ -471,14 +436,15 @@ function speakBrowser(text, cb) {
   u.volume = 1.0;
   u.lang = 'en-GB';
   u.onstart = () => setState('speaking');
-  u.onend = () => { setState('idle'); if (cb) cb(); };
+  u.onend = () => { _voicePaused = false; setState('idle'); if (cb) cb(); };
   u.onerror = (e) => { console.warn('Browser TTS error:', e); setState('idle'); if (cb) cb(); };
   setTimeout(() => { if (window.speechSynthesis.paused) window.speechSynthesis.resume(); }, 100);
   window.speechSynthesis.speak(u);
 }
 
 function speak(text, cb) {
-  if (!cfg.ttsEnabled) { if (cb) cb(); return; }
+  if (!cfg.ttsEnabled) { _voicePaused = false; if (cb) cb(); return; }
+  _voicePaused = true;   // mute mic while JARVIS speaks
   voiceState = 'speaking';
   setState('speaking');
   const clean = cleanForSpeech(text);
@@ -538,7 +504,7 @@ async function processInput(text) {
     isProcessing = false;
     voiceState = 'idle';
     setState('idle');
-    if (voiceContinuous) setTimeout(resumeListening, 500);
+    if (_voiceActive && window._voiceResumeAfterSpeak) window._voiceResumeAfterSpeak();
   }, 45000);
 
   const tid = showTyping();
@@ -892,7 +858,7 @@ function bindEvents() {
 
   // Activate Voice button (continuous mode)
   voiceToggle.addEventListener('click', () => {
-    if (voiceContinuous) {
+    if (_voiceActive) {
       deactivateContinuousVoice();
       voiceToggle.classList.remove('on');
       voiceToggle.textContent = '\u25BA ACTIVATE VOICE';
@@ -916,7 +882,7 @@ function bindEvents() {
       activateContinuousVoice();
       showToast('Wake word mode active — say "Hey JARVIS"');
     } else {
-      if (!voiceContinuous) {
+      if (!_voiceActive) {
         voiceToggle.classList.remove('on');
         voiceToggle.textContent = '\u25BA ACTIVATE VOICE';
       }
@@ -995,7 +961,7 @@ function bindIPC() {
   j.onStats(s => updateStats(s));
 
   j.onVoice(() => {
-    if (!voiceRecording && !voiceContinuous) startMicOnce();
+    if (!voiceRecording && !_voiceActive) startMicOnce();
   });
 
   j.onSettings(() => {
