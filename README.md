@@ -13,27 +13,27 @@ A full Iron Man-style AI desktop assistant built with Electron. Real installed W
 2. Double-click it — that's it
 
 The installer automatically:
-- Installs **Git** if missing
-- Installs **Node.js v20 LTS** if missing
-- Clones this repo to `C:\Users\You\JARVIS`
-- Runs `npm install`
-- Creates a **Desktop shortcut** (no console window)
-- Creates a **Start Menu** entry
+- Installs **Git** and **Node.js v20 LTS** if missing
+- Installs **Ollama** (Local AI Engine) silently
+- Downloads the **Llama 3.2** AI model (2 GB, one-time download)
+- Sets up **Ollama** to auto-start with Windows
+- Clones this repo and installs all dependencies
+- Creates a **Desktop shortcut** and **Start Menu** entry
 - Launches JARVIS
 
 ---
 
 ## Features
 
-- Arc Reactor boot animation with status updates
-- Iron Man HUD with CPU/RAM gauges
-- Voice control (STT + TTS) — sounds like JARVIS
-- Wake word: say "Hey JARVIS"
-- Full AI chat via OpenAI (GPT-4o)
-- PC control: volume, screenshots, apps, web search
-- System tray — minimizes, never closes (Alt+J to toggle)
-- Auto-update from GitHub on every launch
-- Auto-recovery if services crash
+- **Arc Reactor** boot animation with status updates
+- **Iron Man HUD** with real-time CPU/RAM gauges
+- **Voice Control** (STT + TTS) — sounds like JARVIS
+- **Wake Word**: say "Hey JARVIS" to trigger listening
+- **Local AI**: Powered by Llama 3.2 (private, free, no internet needed)
+- **Cloud AI**: Supports OpenAI (GPT-4o) and Google Gemini
+- **PC Control**: volume, screenshots, apps, web search, lock screen
+- **System Tray**: minimizes to tray, never closes (Alt+J to toggle)
+- **Auto-Update**: checks GitHub on every launch to stay current
 
 ---
 
@@ -49,7 +49,7 @@ The installer automatically:
 
 ## Setup
 
-Click Settings (gear icon) to add your OpenAI API key for full AI conversation.
+JARVIS defaults to **Local AI (Ollama)**. If you want to use OpenAI or Gemini, click the **Settings (gear icon)** in the HUD to add your API keys.
 
 ---
 
@@ -63,24 +63,3 @@ npm start
 ```
 
 *Built by mercy1234544*
-
----
-
-## Troubleshooting: Local AI (Ollama)
-
-If you are using **Ollama** for local, private AI and JARVIS says "Cannot connect to Ollama", it means the Ollama background service is not running.
-
-**How to fix it:**
-1. Open your Start Menu and search for **Ollama**.
-2. Click the Ollama app to start it. You should see the Ollama icon (a white llama) appear in your Windows system tray (bottom right corner near the clock).
-3. Alternatively, open Command Prompt (`cmd`) and type:
-   ```cmd
-   ollama serve
-   ```
-   Leave that window open.
-4. Restart JARVIS or try your command again.
-
-**To make Ollama start automatically with Windows:**
-1. Press `Win + R`, type `shell:startup`, and press Enter.
-2. Create a shortcut to the Ollama application in this folder.
-3. Now Ollama will always be ready when JARVIS boots up.

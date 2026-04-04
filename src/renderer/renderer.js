@@ -186,24 +186,24 @@ function startStats() {
 }
 
 // ── VOICE ENGINE ──────────────────────────────────────────────────────────────
-// Uses continuous=true so the recognizer stays open (no instant onend loop).
-// Single persistent recognizer — recreated only when explicitly needed.
+// Uses continuous=true so the recognizer stays open.
+// Fixed: Improved wake word detection and command processing.
 let preferredVoice = null;
 let _voiceActive = false;    // true when voice mode is on
 let _voicePaused = false;    // true while JARVIS is speaking
+let _lastProcessedText = ''; // prevent double-processing same result
 
 function setupVoice() {
   loadPreferredVoice();
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) {
     if (voicePill) { voicePill.textContent = 'VOICE N/A'; voicePill.style.color = '#ff4444'; }
-    console.warn('SpeechRecognition not available');
     return;
   }
 
   function createRec() {
     const r = new SR();
-    r.continuous = true;        // Stay open — no instant onend loop
+    r.continuous = true;
     r.interimResults = true;
     r.lang = 'en-US';
     r.maxAlternatives = 1;
@@ -218,56 +218,54 @@ function setupVoice() {
     };
 
     r.onresult = (e) => {
-      if (_voicePaused) return; // JARVIS is speaking — ignore
+      if (_voicePaused) return;
       let final = '', interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const t = e.results[i][0].transcript;
         if (e.results[i].isFinal) final += t;
         else interim += t;
       }
+      
       if (interim && voiceTranscript) voiceTranscript.textContent = interim + '...';
       if (!final) return;
 
-      if (voiceTranscript) voiceTranscript.textContent = final.trim();
-      const lc = final.trim().toLowerCase();
+      const text = final.trim();
+      if (text === _lastProcessedText) return;
+      _lastProcessedText = text;
+      
+      if (voiceTranscript) voiceTranscript.textContent = text;
+      const lc = text.toLowerCase();
 
       if (cfg.wakeWordEnabled) {
         if (lc.includes('hey jarvis') || lc.includes('jarvis')) {
-          const cmd = lc.replace(/hey jarvis|jarvis/gi, '').trim();
-          _pauseAndProcess(cmd || null, final.trim());
+          // Extract command after wake word
+          let cmd = text.replace(/hey jarvis/gi, '').replace(/jarvis/gi, '').trim();
+          // Remove leading punctuation if any
+          cmd = cmd.replace(/^[\s,.?!]+|[\s,.?!]+$/g, '');
+          _pauseAndProcess(cmd || null, text);
         }
-        // else: not a wake word — keep listening silently
       } else {
-        _pauseAndProcess(null, final.trim());
+        _pauseAndProcess(null, text);
       }
     };
 
     r.onerror = (e) => {
       console.warn('Voice error:', e.error);
       if (e.error === 'not-allowed') {
-        if (voicePill) { voicePill.textContent = 'MIC BLOCKED'; voicePill.style.color = '#ff4444'; }
-        showToast('Microphone access denied. Please allow mic access.', 5000);
         stopVoiceMode();
         return;
       }
-      // no-speech / aborted — restart recognizer if still active
-      if (_voiceActive && !_voicePaused) {
-        setTimeout(() => _restartRec(), 800);
-      }
+      if (_voiceActive && !_voicePaused) setTimeout(() => _restartRec(), 800);
     };
 
     r.onend = () => {
-      if (micBtn) micBtn.classList.remove('recording');
-      if (micIcon) micIcon.textContent = '\uD83C\uDF99';
-      voiceRecording = false;
-      // If still active and not paused — browser killed it, restart
-      if (_voiceActive && !_voicePaused) {
-        setTimeout(() => _restartRec(), 500);
-      } else if (!_voiceActive) {
+      if (_voiceActive && !_voicePaused) setTimeout(() => _restartRec(), 500);
+      else if (!_voiceActive) {
+        if (micBtn) micBtn.classList.remove('recording');
+        if (micIcon) micIcon.textContent = '\uD83C\uDF99';
         setState('idle');
       }
     };
-
     return r;
   }
 
@@ -282,16 +280,13 @@ function setupVoice() {
     _voicePaused = true;
     voiceState = 'processing';
     try { if (voiceRec) voiceRec.abort(); } catch(e) {}
-    if (micBtn) micBtn.classList.remove('recording');
-    if (micIcon) micIcon.textContent = '\uD83C\uDF99';
-
+    
     if (wakeCmd === null && cfg.wakeWordEnabled) {
-      // Wake word with no command — just acknowledge
       const ack = 'Yes, Sir?';
       addMsg('jarvis', ack);
       speak(ack, () => {
-        voiceState = 'idle';
-        if (_voiceActive) setTimeout(() => _restartRec(), 600);
+        _voicePaused = false; // CRITICAL: must unpause before restart
+        if (_voiceActive) _restartRec();
       });
     } else {
       const input = wakeCmd !== null ? wakeCmd : rawText;
@@ -299,10 +294,10 @@ function setupVoice() {
     }
   }
 
-  // Expose for speakAndResume
   window._voiceResumeAfterSpeak = function() {
+    _voicePaused = false;
     voiceState = 'idle';
-    if (_voiceActive) setTimeout(() => _restartRec(), 600);
+    if (_voiceActive) setTimeout(() => _restartRec(), 300);
     else setState('idle');
   };
 
@@ -314,12 +309,11 @@ function setupVoice() {
 function stopVoiceMode() {
   _voiceActive = false;
   _voicePaused = false;
-  voiceContinuous = false;
   voiceState = 'idle';
-  voiceRecording = false;
   try { if (voiceRec) voiceRec.abort(); } catch(e) {}
   if (micBtn) micBtn.classList.remove('recording');
   if (micIcon) micIcon.textContent = '\uD83C\uDF99';
+  if (voicePill) { voicePill.textContent = 'VOICE OFF'; voicePill.classList.remove('active'); }
   setState('idle');
 }
 
