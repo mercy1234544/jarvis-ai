@@ -63,3 +63,24 @@ npm start
 ```
 
 *Built by mercy1234544*
+
+---
+
+## Troubleshooting: Local AI (Ollama)
+
+If you are using **Ollama** for local, private AI and JARVIS says "Cannot connect to Ollama", it means the Ollama background service is not running.
+
+**How to fix it:**
+1. Open your Start Menu and search for **Ollama**.
+2. Click the Ollama app to start it. You should see the Ollama icon (a white llama) appear in your Windows system tray (bottom right corner near the clock).
+3. Alternatively, open Command Prompt (`cmd`) and type:
+   ```cmd
+   ollama serve
+   ```
+   Leave that window open.
+4. Restart JARVIS or try your command again.
+
+**To make Ollama start automatically with Windows:**
+1. Press `Win + R`, type `shell:startup`, and press Enter.
+2. Create a shortcut to the Ollama application in this folder.
+3. Now Ollama will always be ready when JARVIS boots up.
