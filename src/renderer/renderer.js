@@ -197,7 +197,8 @@ let _analyser = null;
 let _micStream = null;
 let _visualizerActive = false;
 let _debugOverlay = null;
-let _silenceTimer = null;
+let _stallTimer = null;
+let _lastAudioTime = Date.now();
 
 function showVoiceDebug(msg, color = 'var(--p)') {
   if (!_debugOverlay) {
@@ -249,22 +250,24 @@ function updateVisualizer() {
     });
   }
   if (avg > 15) {
+    _lastAudioTime = Date.now();
     if (voiceTranscript && voiceTranscript.textContent === 'Listening...') {
       voiceTranscript.textContent = 'Hearing audio...';
     }
     showVoiceDebug(`Audio Level: ${Math.round(avg)} (Hearing you)`, '#0f0');
-    // If we hear audio but no transcript for 5 seconds, force a restart
-    if (!_silenceTimer) {
-      _silenceTimer = setTimeout(() => {
+    
+    // DEEP RESET: If we hear audio but no transcript for 3 seconds, force a restart
+    if (!_stallTimer) {
+      _stallTimer = setTimeout(() => {
         if (_voiceActive && !_voicePaused && !_interimTranscript) {
-          showVoiceDebug('Stall detected: Restarting engine...', '#f44');
+          showVoiceDebug('STALL DETECTED: Deep Resetting Ears...', '#f44');
           _restartRec();
         }
-      }, 5000);
+      }, 3000);
     }
   } else {
     showVoiceDebug(`Audio Level: ${Math.round(avg)} (Silence)`);
-    if (_silenceTimer) { clearTimeout(_silenceTimer); _silenceTimer = null; }
+    if (_stallTimer) { clearTimeout(_stallTimer); _stallTimer = null; }
   }
   requestAnimationFrame(updateVisualizer);
 }
@@ -306,9 +309,14 @@ function setupVoice() {
         else interim += t;
       }
       _interimTranscript = interim || final;
-      if (_interimTranscript) showVoiceDebug(`Transcribing: "${_interimTranscript}"`, '#0af');
+      if (_interimTranscript) {
+        showVoiceDebug(`Transcribing: "${_interimTranscript}"`, '#0af');
+        if (_stallTimer) { clearTimeout(_stallTimer); _stallTimer = null; }
+      }
       
       if (interim && voiceTranscript) voiceTranscript.textContent = interim + '...';
+      
+      // HIGH SENSITIVITY: Process interim results faster
       if (interim) {
         if (_forceProcessTimer) clearTimeout(_forceProcessTimer);
         _forceProcessTimer = setTimeout(() => {
@@ -318,8 +326,9 @@ function setupVoice() {
             _interimTranscript = '';
             _pauseAndProcess(null, text);
           }
-        }, 3000);
+        }, 2500);
       }
+      
       if (!final) return;
       if (_forceProcessTimer) clearTimeout(_forceProcessTimer);
       const text = final.trim();
@@ -328,8 +337,10 @@ function setupVoice() {
       showVoiceDebug(`Final Transcript: "${text}"`, '#0f0');
       if (voiceTranscript) voiceTranscript.textContent = text;
       const lc = text.toLowerCase();
+      
+      // Wake word logic
       if (cfg.wakeWordEnabled) {
-        const wakeWords = ['hey jarvis', 'jarvis', 'service', 'travis', 'javis', 'garvis', 'hello jarvis', 'hi jarvis'];
+        const wakeWords = ['hey jarvis', 'jarvis', 'service', 'travis', 'javis', 'garvis', 'hello jarvis', 'hi jarvis', 'hey javis'];
         let found = false;
         for (const w of wakeWords) {
           if (lc.includes(w)) {
@@ -349,12 +360,12 @@ function setupVoice() {
       showVoiceDebug('Speech Engine Error: ' + e.error, '#f44');
       _voicePaused = false;
       if (e.error === 'not-allowed') { stopVoiceMode(); return; }
-      if (_voiceActive && !_voicePaused) setTimeout(() => _restartRec(), 800);
+      if (_voiceActive && !_voicePaused) setTimeout(() => _restartRec(), 500);
     };
 
     r.onend = () => {
       showVoiceDebug('Speech Engine: DISCONNECTED');
-      if (_voiceActive && !_voicePaused) setTimeout(() => _restartRec(), 500);
+      if (_voiceActive && !_voicePaused) setTimeout(() => _restartRec(), 300);
       else if (!_voiceActive) {
         stopVisualizer();
         if (micBtn) micBtn.classList.remove('recording');
