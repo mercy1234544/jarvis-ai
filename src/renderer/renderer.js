@@ -212,8 +212,12 @@ function setupVoice() {
     r.interimResults = true;
     r.lang = 'en-US';
     r.maxAlternatives = 1;
+    let recStartTime = 0;
+    let gotResult = false;
 
     r.onstart = () => {
+      recStartTime = Date.now();
+      gotResult = false;
       voiceState = 'listening';
       if (micBtn) micBtn.classList.add('recording');
       if (micIcon) micIcon.textContent = '\u23F9'; // stop square
@@ -230,6 +234,7 @@ function setupVoice() {
       }
       if (interim && voiceTranscript) voiceTranscript.textContent = interim + '...';
       if (final) {
+        gotResult = true;
         if (voiceTranscript) voiceTranscript.textContent = final.trim();
         const lc = final.trim().toLowerCase();
         // Stop mic immediately — don't let it pick up JARVIS speaking
@@ -268,7 +273,13 @@ function setupVoice() {
         // Ended without a result (timeout / no-speech)
         voiceState = 'idle';
         if (!isProcessing) setState('idle');
-        if (voiceContinuous) setTimeout(resumeListening, 400);
+        if (voiceContinuous) {
+          // Prevent instant loop: only restart if mic ran for at least 1 second
+          const elapsed = Date.now() - recStartTime;
+          const minRunTime = 1000;
+          const delay = gotResult ? 600 : Math.max(800, minRunTime - elapsed + 200);
+          setTimeout(resumeListening, delay);
+        }
       }
       // If voiceState is 'processing' or 'speaking', resumeListening will be called by speakAndResume
     };
@@ -295,7 +306,11 @@ function setupVoice() {
       }
 
       if (voiceState === 'listening') voiceState = 'idle';
-      if (voiceContinuous && voiceState === 'idle') setTimeout(resumeListening, 500);
+      if (voiceContinuous && voiceState === 'idle') {
+        // For no-speech / aborted errors, wait longer before restarting
+        const delay = (e.error === 'no-speech' || e.error === 'aborted') ? 1200 : 600;
+        setTimeout(resumeListening, delay);
+      }
     };
 
     return r;
