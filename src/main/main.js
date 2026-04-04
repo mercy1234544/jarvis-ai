@@ -60,6 +60,15 @@ function createWin() {
       setTimeout(() => { if(!win || win.isDestroyed()) { createWin(); win.show(); } }, 1500);
     }
   });
+  // Grant microphone permission automatically — required for Web Speech API
+  win.webContents.session.setPermissionRequestHandler((wc, permission, callback) => {
+    const allowed = ['media', 'microphone', 'audioCapture', 'notifications'];
+    callback(allowed.includes(permission));
+  });
+  win.webContents.session.setPermissionCheckHandler((wc, permission) => {
+    const allowed = ['media', 'microphone', 'audioCapture', 'notifications'];
+    return allowed.includes(permission);
+  });
 }
 
 function showWin() {

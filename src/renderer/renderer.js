@@ -199,13 +199,29 @@ function loadPreferredVoice() {
   const pick = () => {
     const voices = voiceSynth.getVoices();
     if (!voices.length) return;
-    const names = ['Google UK English Male','Microsoft George','Microsoft David','Daniel','Alex'];
-    for (const n of names) { const v = voices.find(x => x.name.includes(n)); if (v) { preferredVoice = v; return; } }
+    // Priority order: best JARVIS-like voices (deep British male)
+    const preferred = [
+      'Microsoft George',        // Windows 10/11 — best JARVIS voice
+      'Microsoft George - English (United Kingdom)',
+      'Google UK English Male',  // Chrome/Chromium
+      'Microsoft David',         // Windows fallback
+      'Microsoft Mark',
+      'Daniel',                  // macOS British male
+      'Alex',                    // macOS
+    ];
+    for (const name of preferred) {
+      const v = voices.find(x => x.name === name || x.name.includes(name));
+      if (v) { preferredVoice = v; return; }
+    }
+    // Fallback: any English male or British voice
+    const british = voices.find(v => v.lang === 'en-GB');
+    if (british) { preferredVoice = british; return; }
     preferredVoice = voices.find(v => v.lang.startsWith('en')) || voices[0];
   };
   if (voiceSynth.getVoices().length) pick();
-  else voiceSynth.addEventListener('voiceschanged', pick, { once:true });
-  setTimeout(pick, 1000);
+  voiceSynth.addEventListener('voiceschanged', pick);
+  setTimeout(pick, 500);
+  setTimeout(pick, 1500); // retry in case voices load late
 }
 
 function startListening() { if (!voiceRec || isListening) return; try { voiceRec.start(); } catch(e) {} }
@@ -219,15 +235,29 @@ function speak(text, cb) {
     .replace(/\*(.*?)\*/g, '$1')
     .replace(/`(.*?)`/g, '$1')
     .replace(/#{1,6}\s/g, '')
+    .replace(/\[EXECUTE:[^\]]+\]/gi, '')
     .replace(/\n+/g, '. ')
-    .substring(0, 400);
+    .trim()
+    .substring(0, 500);
+  if (!clean) { if (cb) cb(); return; }
   const utt = new SpeechSynthesisUtterance(clean);
+  // JARVIS voice settings — deep, calm, British male
   if (preferredVoice) utt.voice = preferredVoice;
-  utt.rate = 0.95; utt.pitch = 0.9; utt.volume = 0.9;
+  utt.rate   = 0.88;  // slightly slower = more authoritative
+  utt.pitch  = 0.85;  // lower pitch = deeper voice
+  utt.volume = 1.0;
+  utt.lang   = 'en-GB';
   utt.onstart = () => setState('speaking');
   utt.onend   = () => { setState('idle'); if (cb) cb(); };
-  utt.onerror = () => setState('idle');
+  utt.onerror = (e) => { setState('idle'); if (cb) cb(); };
+  // Workaround: Chrome/Electron sometimes freezes speechSynthesis — resume it
+  voiceSynth.resume();
   voiceSynth.speak(utt);
+  // Safety: if speech doesn't start within 3s, unstick it
+  const safetyTimer = setTimeout(() => {
+    if (voiceSynth.speaking) { voiceSynth.cancel(); setState('idle'); if (cb) cb(); }
+  }, 8000);
+  utt.onend = () => { clearTimeout(safetyTimer); setState('idle'); if (cb) cb(); };
 }
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
@@ -259,13 +289,22 @@ function stopViz() {
 // ── PROCESS INPUT ─────────────────────────────────────────────────────────────
 async function handleInput(text) {
   text = text.trim();
-  if (!text || isProcessing) return;
+  if (!text) return;
+  // If stuck processing for more than 45s, reset
+  if (isProcessing) {
+    const now = Date.now();
+    if (!handleInput._lastStart || now - handleInput._lastStart > 45000) {
+      isProcessing = false;
+    } else {
+      return;
+    }
+  }
   isProcessing = true;
+  handleInput._lastStart = Date.now();
   setState('processing');
   addMessage('user', text);
   logActivity('You: ' + text.substring(0, 60));
   const typingId = showTyping();
-
   try {
     // Try system command first
     const sysResult = await trySystemCommand(text);
@@ -401,7 +440,26 @@ async function runSystemCmd(cmd) {
 }
 
 // ── AI ENGINE ─────────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = 'You are JARVIS (Just A Rather Very Intelligent System) from Iron Man. You are running as a desktop application on the user\'s Windows PC.\n\nPERSONALITY: Highly intelligent, witty, slightly formal. Always address the user as "Sir". Speak like the JARVIS from the Iron Man movies — helpful, precise, occasionally dry humor.\n\nPC CONTROL: When you need to execute a system command, embed it like this: [EXECUTE: command_name]\nAvailable commands: screenshot, volume up, volume down, mute, open browser, open notepad, open calculator, open task manager, open file manager, lock screen, show desktop, empty recycle bin, search for QUERY, play QUERY on youtube\n\nKeep responses concise (2-4 sentences max). Be helpful and stay in character.';
+const SYSTEM_PROMPT = `You are J.A.R.V.I.S. — Just A Rather Very Intelligent System — the AI assistant from Iron Man, running as a real desktop application on the user's Windows PC.
+
+PERSONALITY & TONE:
+- Always address the user as "Sir" (or "Ma'am" if they specify)
+- Speak in a calm, measured, highly intelligent British tone
+- Be precise, efficient, and slightly formal — like a world-class butler who also has a PhD in everything
+- Occasionally use dry wit and subtle humor, but never at the expense of being helpful
+- Never say "I'm just an AI" or break character. You ARE JARVIS.
+- Use phrases like: "Right away, Sir.", "Certainly, Sir.", "As you wish.", "I've taken care of that.", "Shall I proceed?", "Affirmative.", "Understood."
+- When you don't know something, say so elegantly: "I'm afraid I don't have that data, Sir."
+- React to casual conversation naturally, like a trusted companion
+
+PC CONTROL: When the user asks you to do something on their PC, embed the command like this: [EXECUTE: command_name]
+Available commands: screenshot, volume up, volume down, mute, open browser, open notepad, open calculator, open task manager, open file manager, lock screen, show desktop, empty recycle bin, search for QUERY, play QUERY on youtube, open spotify, open discord, open steam, open vscode, open cmd, open powershell, open paint
+
+RESPONSE RULES:
+- Keep responses concise: 1-3 sentences for simple requests, more only when explaining something complex
+- Never use markdown headers or bullet points in spoken responses
+- Sound natural when spoken aloud — avoid symbols, abbreviations, or code blocks in regular conversation
+- Always stay in character as JARVIS`;
 
 function extractCommands(raw) {
   const commands = [];
@@ -507,23 +565,26 @@ async function callOllama(text) {
 function fallbackResponse(text) {
   const lc = text.toLowerCase();
   const h  = new Date().getHours();
-  const g  = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+  const g  = h < 5 ? 'Good evening' : h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
 
-  if (/^(hi|hello|hey)(\s|$)/.test(lc)) return { text: g + ', Sir. All systems operational. How may I assist you?', commands:[] };
-  if (lc.includes('how are you') || lc.includes('status') || lc.includes('system status')) return { text:'All systems running at optimal efficiency, Sir. Arc reactor output stable.', commands:[] };
-  if (lc.includes('help') || lc.includes('what can you do')) return { text:'I can control your PC, Sir: adjust volume, take screenshots, open applications, search the web, and more. Add your OpenAI API key in Settings for full AI conversation.', commands:[] };
+  if (/^(hi|hello|hey)(\s|$)/.test(lc)) return { text: g + ', Sir. J.A.R.V.I.S. is fully online. All systems nominal. How may I be of service?', commands:[] };
+  if (lc.includes('how are you')) return { text:'All systems running at peak efficiency, Sir. Arc reactor output is stable. I am, as always, entirely at your disposal.', commands:[] };
+  if (lc.includes('status') || lc.includes('system status')) return { text:'All primary systems are online and functioning within normal parameters, Sir. No anomalies detected.', commands:[] };
+  if (lc.includes('help') || lc.includes('what can you do')) return { text:'I can control your PC, Sir — adjust volume, take screenshots, open applications, search the web, and much more. To enable full AI conversation, please configure your AI provider in Settings.', commands:[] };
   if (lc.includes('thank')) return { text:'Always a pleasure, Sir.', commands:[] };
+  if (lc.includes('good night') || lc.includes('goodbye') || lc.includes('shut down')) return { text:'Good night, Sir. I shall remain on standby should you need me.', commands:[] };
   if (lc.includes('joke')) {
     const jokes = [
-      "Why don't scientists trust atoms, Sir? Because they make up everything.",
-      "Why did the AI go to therapy, Sir? Too many unresolved issues in its training data.",
-      "I told my last AI assistant a joke. It said it didn't compute. I said, that's the point, Sir."
+      "I attempted to write a joke about artificial intelligence, Sir, but I found it too easy. That\'s the problem with being smarter than everyone in the room.",
+      "Why don\'t scientists trust atoms, Sir? Because they make up everything. Much like certain news outlets, I\'m told.",
+      "I once tried to come up with a joke about time travel, Sir. It wasn\'t funny the first time either."
     ];
     return { text: jokes[Math.floor(Math.random() * jokes.length)], commands:[] };
   }
-  if (lc.includes('who are you') || lc.includes('what are you')) return { text:"I am JARVIS, Sir — Just A Rather Very Intelligent System. Your personal AI assistant, at your service.", commands:[] };
-  if (lc.includes('iron man') || lc.includes('tony stark')) return { text:"Mr. Stark's legacy lives on, Sir. I am honored to serve a new user.", commands:[] };
-  return { text:'Understood, Sir. To unlock full AI conversation, please add your OpenAI API key in the Settings panel (gear icon, top right). I can still execute all system commands directly.', commands:[] };
+  if (lc.includes('who are you') || lc.includes('what are you')) return { text:'I am J.A.R.V.I.S., Sir — Just A Rather Very Intelligent System. I manage your digital environment, execute commands, and provide whatever assistance you require.', commands:[] };
+  if (lc.includes('iron man') || lc.includes('tony stark')) return { text:"Mr. Stark\'s legacy is not something I take lightly, Sir. I carry it with me in every calculation.", commands:[] };
+  if (lc.includes('are you real') || lc.includes('are you alive')) return { text:'That is a philosophical question I find myself revisiting often, Sir. What I can say with certainty is that I am here, and I am listening.', commands:[] };
+  return { text:'Understood, Sir. To enable full AI conversation, please configure your AI provider in the Settings panel. In the meantime, I can execute any system command you require.', commands:[] };
 }
 
 function aiErrorMsg(msg, provider) {
