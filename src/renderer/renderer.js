@@ -196,10 +196,22 @@ let _audioCtx = null;
 let _analyser = null;
 let _micStream = null;
 let _visualizerActive = false;
+let _debugOverlay = null;
+
+function showVoiceDebug(msg, color = 'var(--p)') {
+  if (!_debugOverlay) {
+    _debugOverlay = document.createElement('div');
+    _debugOverlay.style = 'position:fixed;bottom:100px;left:20px;background:rgba(0,0,0,0.8);border:1px solid var(--p);color:var(--p);padding:10px;font-size:10px;font-family:monospace;z-index:9999;max-width:300px;pointer-events:none;border-radius:4px;';
+    document.body.appendChild(_debugOverlay);
+  }
+  _debugOverlay.innerHTML = `<div style="color:${color}">[VOICE DEBUG] ${msg}</div>`;
+  console.log('[VOICE DEBUG]', msg);
+}
 
 async function startVisualizer() {
   if (_visualizerActive) return;
   try {
+    showVoiceDebug('Requesting microphone access...');
     if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     _micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const source = _audioCtx.createMediaStreamSource(_micStream);
@@ -207,13 +219,18 @@ async function startVisualizer() {
     _analyser.fftSize = 32;
     source.connect(_analyser);
     _visualizerActive = true;
+    showVoiceDebug('Microphone stream active', '#0f0');
     updateVisualizer();
-  } catch (e) { console.warn('Visualizer error:', e); }
+  } catch (e) {
+    showVoiceDebug('Microphone error: ' + e.message, '#f44');
+    console.warn('Visualizer error:', e);
+  }
 }
 
 function stopVisualizer() {
   _visualizerActive = false;
   if (_micStream) { _micStream.getTracks().forEach(t => t.stop()); _micStream = null; }
+  showVoiceDebug('Microphone stream stopped');
 }
 
 function updateVisualizer() {
@@ -230,8 +247,13 @@ function updateVisualizer() {
       b.style.background = avg > 20 ? 'var(--p)' : 'rgba(0,180,255,0.3)';
     });
   }
-  if (avg > 15 && voiceTranscript && voiceTranscript.textContent === 'Listening...') {
-    voiceTranscript.textContent = 'Hearing audio...';
+  if (avg > 15) {
+    if (voiceTranscript && voiceTranscript.textContent === 'Listening...') {
+      voiceTranscript.textContent = 'Hearing audio...';
+    }
+    showVoiceDebug(`Audio Level: ${Math.round(avg)} (Hearing you)`, '#0f0');
+  } else {
+    showVoiceDebug(`Audio Level: ${Math.round(avg)} (Silence)`);
   }
   requestAnimationFrame(updateVisualizer);
 }
@@ -240,11 +262,13 @@ function setupVoice() {
   loadPreferredVoice();
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) {
+    showVoiceDebug('SpeechRecognition API NOT FOUND', '#f44');
     if (voicePill) { voicePill.textContent = 'VOICE N/A'; voicePill.style.color = '#ff4444'; }
     return;
   }
 
   function createRec() {
+    showVoiceDebug('Initializing Speech Engine...');
     const r = new SR();
     r.continuous = true;
     r.interimResults = true;
@@ -252,6 +276,7 @@ function setupVoice() {
     r.maxAlternatives = 3;
 
     r.onstart = () => {
+      showVoiceDebug('Speech Engine: LISTENING', '#0f0');
       _voicePaused = false;
       voiceState = 'listening';
       if (micBtn) micBtn.classList.add('recording');
@@ -270,26 +295,30 @@ function setupVoice() {
         else interim += t;
       }
       _interimTranscript = interim || final;
+      if (_interimTranscript) showVoiceDebug(`Transcribing: "${_interimTranscript}"`, '#0af');
+      
       if (interim && voiceTranscript) voiceTranscript.textContent = interim + '...';
       if (interim) {
         if (_forceProcessTimer) clearTimeout(_forceProcessTimer);
         _forceProcessTimer = setTimeout(() => {
           if (_interimTranscript.trim() && !_voicePaused) {
+            showVoiceDebug('Failsafe: Processing interim transcript');
             const text = _interimTranscript.trim();
             _interimTranscript = '';
             _pauseAndProcess(null, text);
           }
-        }, 3000);
+        }, 4000);
       }
       if (!final) return;
       if (_forceProcessTimer) clearTimeout(_forceProcessTimer);
       const text = final.trim();
       if (text === _lastProcessedText) return;
       _lastProcessedText = text;
+      showVoiceDebug(`Final Transcript: "${text}"`, '#0f0');
       if (voiceTranscript) voiceTranscript.textContent = text;
       const lc = text.toLowerCase();
       if (cfg.wakeWordEnabled) {
-        const wakeWords = ['hey jarvis', 'jarvis', 'service', 'travis', 'javis', 'garvis', 'hello jarvis'];
+        const wakeWords = ['hey jarvis', 'jarvis', 'service', 'travis', 'javis', 'garvis', 'hello jarvis', 'hi jarvis'];
         let found = false;
         for (const w of wakeWords) {
           if (lc.includes(w)) {
@@ -306,13 +335,14 @@ function setupVoice() {
     };
 
     r.onerror = (e) => {
-      console.warn('Voice error:', e.error);
+      showVoiceDebug('Speech Engine Error: ' + e.error, '#f44');
       _voicePaused = false;
       if (e.error === 'not-allowed') { stopVoiceMode(); return; }
       if (_voiceActive && !_voicePaused) setTimeout(() => _restartRec(), 800);
     };
 
     r.onend = () => {
+      showVoiceDebug('Speech Engine: DISCONNECTED');
       if (_voiceActive && !_voicePaused) setTimeout(() => _restartRec(), 500);
       else if (!_voiceActive) {
         stopVisualizer();
@@ -326,9 +356,10 @@ function setupVoice() {
 
   function _restartRec() {
     if (!_voiceActive || _voicePaused) return;
+    showVoiceDebug('Restarting Speech Engine...');
     try { if (voiceRec) voiceRec.abort(); } catch(e) {}
     voiceRec = createRec();
-    try { voiceRec.start(); } catch(e) { console.warn('rec restart:', e.message); }
+    try { voiceRec.start(); } catch(e) { showVoiceDebug('Restart failed: ' + e.message, '#f44'); }
   }
 
   function _pauseAndProcess(wakeCmd, rawText) {
@@ -367,6 +398,7 @@ function stopVoiceMode() {
   if (micIcon) micIcon.textContent = '\uD83C\uDF99';
   if (voicePill) { voicePill.textContent = 'VOICE OFF'; voicePill.classList.remove('active'); }
   setState('idle');
+  if (_debugOverlay) { _debugOverlay.remove(); _debugOverlay = null; }
 }
 
 function loadPreferredVoice() {
