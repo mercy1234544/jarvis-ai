@@ -248,7 +248,7 @@ function setupVoice() {
     const r = new SR();
     r.continuous = true;
     r.interimResults = true;
-    r.lang = navigator.language || 'en-US';
+    r.lang = 'en-US';
     r.maxAlternatives = 3;
 
     r.onstart = () => {
