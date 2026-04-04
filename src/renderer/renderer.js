@@ -193,6 +193,66 @@ let _voiceActive = false;    // true when voice mode is on
 let _voicePaused = false;    // true while JARVIS is speaking
 let _lastProcessedText = ''; // prevent double-processing same result
 
+
+// ── AUDIO VISUALIZER ──────────────────────────────────────────────────────────
+let audioCtx = null;
+let analyser = null;
+let micStream = null;
+let visualizerActive = false;
+
+async function startVisualizer() {
+  if (visualizerActive) return;
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const source = audioCtx.createMediaStreamSource(micStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 32;
+    source.connect(analyser);
+    visualizerActive = true;
+    console.log('Audio visualizer started');
+    updateVisualizer();
+  } catch (e) {
+    console.warn('Visualizer error:', e);
+  }
+}
+
+function stopVisualizer() {
+  visualizerActive = false;
+  if (micStream) {
+    micStream.getTracks().forEach(t => t.stop());
+    micStream = null;
+  }
+  console.log('Audio visualizer stopped');
+}
+
+function updateVisualizer() {
+  if (!visualizerActive || !analyser) return;
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(data);
+  
+  // Calculate average volume
+  let sum = 0;
+  for (let i = 0; i < data.length; i++) sum += data[i];
+  const avg = sum / data.length;
+  
+  // Update UI (Arc Reactor pulse or Net Bars)
+  const bars = document.querySelectorAll('.nb');
+  if (bars.length > 0) {
+    bars.forEach((b, i) => {
+      const val = data[i % data.length] / 255 * 100;
+      b.style.height = Math.max(10, val) + '%';
+      b.style.background = avg > 30 ? 'var(--p)' : 'rgba(0,180,255,0.3)';
+    });
+  }
+  
+  if (avg > 20 && voiceTranscript && voiceTranscript.textContent === 'Listening...') {
+    voiceTranscript.textContent = 'Hearing audio...';
+  }
+
+  requestAnimationFrame(updateVisualizer);
+}
+
 function setupVoice() {
   loadPreferredVoice();
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -209,15 +269,18 @@ function setupVoice() {
     r.maxAlternatives = 1;
 
     r.onstart = () => {
+      console.log('Speech Recognition started');
       _voicePaused = false;
       voiceState = 'listening';
       if (micBtn) micBtn.classList.add('recording');
       if (micIcon) micIcon.textContent = '\u23F9';
       if (voiceTranscript) voiceTranscript.textContent = 'Listening...';
       setState('listening');
+      startVisualizer(); // Start visualizer to show mic activity
     };
 
     r.onresult = (e) => {
+      console.log('Speech result received:', e.results.length);
       if (_voicePaused) return;
       let final = '', interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -259,8 +322,11 @@ function setupVoice() {
     };
 
     r.onend = () => {
-      if (_voiceActive && !_voicePaused) setTimeout(() => _restartRec(), 500);
-      else if (!_voiceActive) {
+      console.log('Speech Recognition ended');
+      if (_voiceActive && !_voicePaused) {
+        setTimeout(() => _restartRec(), 500);
+      } else if (!_voiceActive) {
+        stopVisualizer(); // Stop visualizer when voice mode is off
         if (micBtn) micBtn.classList.remove('recording');
         if (micIcon) micIcon.textContent = '\uD83C\uDF99';
         setState('idle');
