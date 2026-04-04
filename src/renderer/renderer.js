@@ -1,518 +1,659 @@
 'use strict';
-// window.J is injected by the preload contextBridge — always access via getter
-const J = () => window.J || null;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// JARVIS Renderer — all DOM refs resolved inside init() after DOMContentLoaded
+// IPC bridge accessed via window.JARVIS (set by contextBridge in preload.js)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// State
 let cfg = { apiKey:'', model:'gpt-4o-mini', ttsEnabled:true, startWithWindows:false, autoUpdate:true, wakeWordEnabled:false };
-let voice = { rec:null, synth:window.speechSynthesis, listening:false, voice:null, continuous:false };
-let recording=false, processing=false, history=[];
+let voiceRec = null, voiceSynth = window.speechSynthesis, preferredVoice = null;
+let isListening = false, isContinuous = false, isProcessing = false;
+let chatHistory = [], vizTimer = null;
 
-// DOM refs — resolved after DOMContentLoaded
-let chatArea, userInput, sendBtn, micBtn, micIcon, viz;
-let voiceToggle, wakeToggle, voiceTranscript, vsdText;
-let arcReactor, actBox, toast, settingsPanel;
-let btnSettings, btnMin, btnClose, aiPill, voicePill, clock;
+// DOM refs (set in init)
+let elChat, elInput, elSend, elMic, elMicIcon, elViz;
+let elVoiceBtn, elWakeToggle, elTranscript, elStateText;
+let elReactor, elActLog, elToast, elSettings;
+let elBtnSettings, elBtnMin, elBtnClose, elAIPill, elVoicePill, elClock;
+
 const $ = id => document.getElementById(id);
 
-// ── INIT ──────────────────────────────────────────────────────────────────
+// ── INIT ─────────────────────────────────────────────────────────────────────
 async function init() {
-  // Resolve DOM refs
-  chatArea=$('chatArea'); userInput=$('userInput'); sendBtn=$('sendBtn');
-  micBtn=$('micBtn'); micIcon=$('micIcon'); viz=$('viz');
-  voiceToggle=$('voiceToggle'); wakeToggle=$('wakeToggle');
-  voiceTranscript=$('voiceTranscript'); vsdText=$('vsdText');
-  arcReactor=$('arcReactor'); actBox=$('actBox');
-  toast=$('toast'); settingsPanel=$('settingsPanel');
-  btnSettings=$('btnSettings'); btnMin=$('btnMin'); btnClose=$('btnClose');
-  aiPill=$('aiPill'); voicePill=$('voicePill'); clock=$('clock');
+  // Resolve all DOM refs
+  elChat        = $('chatArea');
+  elInput       = $('userInput');
+  elSend        = $('sendBtn');
+  elMic         = $('micBtn');
+  elMicIcon     = $('micIcon');
+  elViz         = $('viz');
+  elVoiceBtn    = $('voiceToggle');
+  elWakeToggle  = $('wakeToggle');
+  elTranscript  = $('voiceTranscript');
+  elStateText   = $('vsdText');
+  elReactor     = $('arcReactor');
+  elActLog      = $('actBox');
+  elToast       = $('toast');
+  elSettings    = $('settingsPanel');
+  elBtnSettings = $('btnSettings');
+  elBtnMin      = $('btnMin');
+  elBtnClose    = $('btnClose');
+  elAIPill      = $('aiPill');
+  elVoicePill   = $('voicePill');
+  elClock       = $('clock');
 
   // Load config from main process
-  const jb = J();
-  if(jb) {
-    try { cfg = await jb.getCfg(); } catch(e) { console.error('getCfg failed', e); }
+  if (window.JARVIS) {
+    try { cfg = await window.JARVIS.getCfg(); } catch(e) { console.warn('getCfg failed:', e); }
   }
 
   applySettings();
-  initVoice();
+  setupVoice();
   bindEvents();
   bindIPC();
-  tickClock();
+  startClock();
 
-  setTimeout(()=>{
-    const h=new Date().getHours();
-    const g=h<12?'Good morning':h<17?'Good afternoon':'Good evening';
-    addMsg('jarvis', g+', Sir. JARVIS is fully online. All systems nominal. How may I assist you today?');
-    if(cfg.ttsEnabled) speak(g+', Sir. JARVIS is fully online.');
-  }, 500);
-  logAct('JARVIS initialized');
+  // Greeting
+  setTimeout(() => {
+    const h = new Date().getHours();
+    const greet = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+    const msg = greet + ', Sir. JARVIS is fully online. All systems nominal. How may I assist you today?';
+    addMessage('jarvis', msg);
+    if (cfg.ttsEnabled) speak(msg);
+  }, 400);
+
+  logActivity('JARVIS initialized');
 }
 
+// ── SETTINGS ─────────────────────────────────────────────────────────────────
 function applySettings() {
-  if($('apiKeyInput')) $('apiKeyInput').value = cfg.apiKey||'';
-  if($('modelSelect')) $('modelSelect').value = cfg.model||'gpt-4o-mini';
-  if($('startupToggle')) $('startupToggle').checked = !!cfg.startWithWindows;
-  if($('ttsToggle')) $('ttsToggle').checked = cfg.ttsEnabled!==false;
-  if($('autoUpdateToggle')) $('autoUpdateToggle').checked = cfg.autoUpdate!==false;
-  updateAIPill();
+  if ($('apiKeyInput'))      $('apiKeyInput').value      = cfg.apiKey || '';
+  if ($('modelSelect'))      $('modelSelect').value      = cfg.model  || 'gpt-4o-mini';
+  if ($('startupToggle'))    $('startupToggle').checked  = !!cfg.startWithWindows;
+  if ($('ttsToggle'))        $('ttsToggle').checked      = cfg.ttsEnabled !== false;
+  if ($('autoUpdateToggle')) $('autoUpdateToggle').checked = cfg.autoUpdate !== false;
+  refreshAIPill();
 }
 
-function updateAIPill() {
-  if(!aiPill) return;
-  if(cfg.apiKey){ aiPill.textContent='AI CORE ACTIVE'; aiPill.classList.add('active'); aiPill.style.cssText=''; }
-  else{ aiPill.textContent='NO API KEY'; aiPill.classList.remove('active'); aiPill.style.borderColor='rgba(255,170,0,0.5)'; aiPill.style.color='rgba(255,170,0,0.7)'; }
+function refreshAIPill() {
+  if (!elAIPill) return;
+  if (cfg.apiKey) {
+    elAIPill.textContent = 'AI CORE ACTIVE';
+    elAIPill.classList.add('active');
+    elAIPill.style.cssText = '';
+  } else {
+    elAIPill.textContent = 'NO API KEY';
+    elAIPill.classList.remove('active');
+    elAIPill.style.borderColor = 'rgba(255,170,0,0.5)';
+    elAIPill.style.color = 'rgba(255,170,0,0.7)';
+  }
 }
 
-function tickClock() {
-  const update=()=>{ if(clock) clock.textContent=new Date().toLocaleTimeString(); };
-  update(); setInterval(update,1000);
+// ── CLOCK ─────────────────────────────────────────────────────────────────────
+function startClock() {
+  const tick = () => { if (elClock) elClock.textContent = new Date().toLocaleTimeString(); };
+  tick(); setInterval(tick, 1000);
 }
 
-// ── VOICE ENGINE ──────────────────────────────────────────────────────────
-function initVoice() {
-  loadVoices();
-  if(!('webkitSpeechRecognition' in window||'SpeechRecognition' in window)){
-    if(voicePill){ voicePill.textContent='VOICE N/A'; voicePill.style.borderColor='rgba(255,50,50,0.4)'; voicePill.style.color='rgba(255,50,50,0.6)'; }
+// ── VOICE ENGINE ─────────────────────────────────────────────────────────────
+function setupVoice() {
+  loadPreferredVoice();
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    if (elVoicePill) { elVoicePill.textContent = 'VOICE N/A'; elVoicePill.style.color = '#ff4444'; }
     return;
   }
-  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  voice.rec=new SR(); voice.rec.continuous=false; voice.rec.interimResults=true; voice.rec.lang='en-US';
-  voice.rec.onstart=()=>{ voice.listening=true; setState('listening'); };
-  voice.rec.onend=()=>{
-    voice.listening=false; recording=false;
-    if(micBtn){ micBtn.classList.remove('recording'); }
-    if(micIcon) micIcon.textContent='\uD83C\uDF99';
-    if(!processing) setState('idle');
-    if(voice.continuous) setTimeout(()=>{ if(voice.continuous&&!voice.listening) startRec(); },400);
+  voiceRec = new SR();
+  voiceRec.continuous = false;
+  voiceRec.interimResults = true;
+  voiceRec.lang = 'en-US';
+
+  voiceRec.onstart = () => { isListening = true; setState('listening'); };
+
+  voiceRec.onend = () => {
+    isListening = false;
+    if (elMic) elMic.classList.remove('recording');
+    if (elMicIcon) elMicIcon.textContent = '\uD83C\uDF99';
+    if (!isProcessing) setState('idle');
+    if (isContinuous) setTimeout(() => { if (isContinuous && !isListening) startListening(); }, 400);
   };
-  voice.rec.onresult=e=>{
-    let fin='',int='';
-    for(let i=e.resultIndex;i<e.results.length;i++){
-      const t=e.results[i][0].transcript;
-      if(e.results[i].isFinal) fin+=t; else int+=t;
+
+  voiceRec.onresult = e => {
+    let final = '', interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) final += t; else interim += t;
     }
-    if(int&&voiceTranscript) voiceTranscript.textContent=int+'...';
-    if(fin){
-      if(voiceTranscript) voiceTranscript.textContent=fin.trim();
-      const lc=fin.trim().toLowerCase();
-      if(voice.continuous&&cfg.wakeWordEnabled){
-        if(lc.includes('hey jarvis')||lc.includes('jarvis')){
-          const cmd=lc.replace(/hey jarvis|jarvis/gi,'').trim();
-          if(cmd) processCmd(cmd); else{ speak('Yes, Sir?'); addMsg('jarvis','Yes, Sir?'); }
+    if (interim && elTranscript) elTranscript.textContent = interim + '...';
+    if (final) {
+      if (elTranscript) elTranscript.textContent = final.trim();
+      const lc = final.trim().toLowerCase();
+      if (isContinuous && cfg.wakeWordEnabled) {
+        if (lc.includes('hey jarvis') || lc.includes('jarvis')) {
+          const cmd = lc.replace(/hey jarvis|jarvis/gi, '').trim();
+          if (cmd) handleInput(cmd); else { speak('Yes, Sir?'); addMessage('jarvis', 'Yes, Sir?'); }
         }
-      } else processCmd(fin.trim());
+      } else {
+        handleInput(final.trim());
+      }
     }
   };
-  voice.rec.onerror=e=>{
-    voice.listening=false; recording=false;
-    if(micBtn) micBtn.classList.remove('recording');
-    if(micIcon) micIcon.textContent='\uD83C\uDF99';
-    if(e.error!=='no-speech'&&e.error!=='aborted'){ setState('error'); setTimeout(()=>setState('idle'),2000); }
+
+  voiceRec.onerror = e => {
+    isListening = false;
+    if (elMic) elMic.classList.remove('recording');
+    if (elMicIcon) elMicIcon.textContent = '\uD83C\uDF99';
+    if (e.error !== 'no-speech' && e.error !== 'aborted') { setState('error'); setTimeout(() => setState('idle'), 2000); }
     else setState('idle');
-    if(voice.continuous&&e.error==='no-speech') setTimeout(()=>{ if(voice.continuous&&!voice.listening) startRec(); },500);
+    if (isContinuous && e.error === 'no-speech') setTimeout(() => { if (isContinuous && !isListening) startListening(); }, 500);
   };
-  if(voicePill){ voicePill.textContent='VOICE READY'; voicePill.classList.add('active'); }
+
+  if (elVoicePill) { elVoicePill.textContent = 'VOICE READY'; elVoicePill.classList.add('active'); }
 }
 
-function loadVoices() {
-  const try_=()=>{
-    const vs=window.speechSynthesis.getVoices();
-    if(!vs.length) return;
-    const pref=['Google UK English Male','Microsoft George','Microsoft David','Daniel','Alex'];
-    for(const n of pref){ const v=vs.find(x=>x.name.includes(n)); if(v){ voice.voice=v; return; } }
-    voice.voice=vs.find(v=>v.lang.startsWith('en'))||vs[0];
+function loadPreferredVoice() {
+  const pick = () => {
+    const voices = voiceSynth.getVoices();
+    if (!voices.length) return;
+    const names = ['Google UK English Male','Microsoft George','Microsoft David','Daniel','Alex'];
+    for (const n of names) { const v = voices.find(x => x.name.includes(n)); if (v) { preferredVoice = v; return; } }
+    preferredVoice = voices.find(v => v.lang.startsWith('en')) || voices[0];
   };
-  if(window.speechSynthesis.getVoices().length) try_();
-  else window.speechSynthesis.addEventListener('voiceschanged',try_,{once:true});
-  setTimeout(try_,1000);
+  if (voiceSynth.getVoices().length) pick();
+  else voiceSynth.addEventListener('voiceschanged', pick, { once:true });
+  setTimeout(pick, 1000);
 }
 
-function startRec(){ if(!voice.rec||voice.listening) return; try{ voice.rec.start(); }catch(e){} }
-function stopRec(){ if(!voice.rec) return; voice.continuous=false; try{ voice.rec.stop(); }catch(e){} }
+function startListening() { if (!voiceRec || isListening) return; try { voiceRec.start(); } catch(e) {} }
+function stopListening()  { if (!voiceRec) return; isContinuous = false; try { voiceRec.stop(); } catch(e) {} }
 
-function speak(text,cb){
-  if(!cfg.ttsEnabled||!window.speechSynthesis) return;
-  window.speechSynthesis.cancel();
-  const clean=text.replace(/\*\*(.*?)\*\*/g,'$1').replace(/\*(.*?)\*/g,'$1').replace(/`(.*?)`/g,'$1').replace(/#{1,6}\s/g,'').replace(/\n+/g,'. ').substring(0,400);
-  const u=new SpeechSynthesisUtterance(clean);
-  if(voice.voice) u.voice=voice.voice;
-  u.rate=0.95; u.pitch=0.9; u.volume=0.9;
-  u.onstart=()=>setState('speaking');
-  u.onend=()=>{ setState('idle'); if(cb) cb(); };
-  u.onerror=()=>setState('idle');
-  window.speechSynthesis.speak(u);
+function speak(text, cb) {
+  if (!cfg.ttsEnabled || !voiceSynth) { if (cb) cb(); return; }
+  voiceSynth.cancel();
+  const clean = text
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/`(.*?)`/g, '$1')
+    .replace(/#{1,6}\s/g, '')
+    .replace(/\n+/g, '. ')
+    .substring(0, 400);
+  const utt = new SpeechSynthesisUtterance(clean);
+  if (preferredVoice) utt.voice = preferredVoice;
+  utt.rate = 0.95; utt.pitch = 0.9; utt.volume = 0.9;
+  utt.onstart = () => setState('speaking');
+  utt.onend   = () => { setState('idle'); if (cb) cb(); };
+  utt.onerror = () => setState('idle');
+  voiceSynth.speak(utt);
 }
 
-// ── STATE ─────────────────────────────────────────────────────────────────
-let vizInt=null;
-function setState(s){
-  const labels={idle:'READY',listening:'LISTENING...',processing:'PROCESSING...',speaking:'SPEAKING...',error:'ERROR',updating:'UPDATING...'};
-  if(vsdText) vsdText.textContent=labels[s]||'READY';
-  if(arcReactor){
-    arcReactor.className='';
-    if(s==='speaking') arcReactor.style.filter='drop-shadow(0 0 8px #00d4ff)';
-    else if(s==='processing'||s==='updating') arcReactor.style.filter='drop-shadow(0 0 12px #ffaa00)';
-    else arcReactor.style.filter='';
+// ── STATE ─────────────────────────────────────────────────────────────────────
+function setState(s) {
+  const labels = { idle:'READY', listening:'LISTENING...', processing:'PROCESSING...', speaking:'SPEAKING...', error:'ERROR', updating:'UPDATING...' };
+  if (elStateText) elStateText.textContent = labels[s] || 'READY';
+  if (elReactor) {
+    if      (s === 'speaking')                   elReactor.style.filter = 'drop-shadow(0 0 8px #00d4ff)';
+    else if (s === 'processing' || s === 'updating') elReactor.style.filter = 'drop-shadow(0 0 12px #ffaa00)';
+    else                                         elReactor.style.filter = '';
   }
-  if(viz){
-    if(s==='listening'){ viz.classList.add('active'); startViz(); }
-    else{ viz.classList.remove('active'); stopViz(); }
+  if (elViz) {
+    if (s === 'listening') { elViz.classList.add('active'); startViz(); }
+    else                   { elViz.classList.remove('active'); stopViz(); }
   }
 }
-function startViz(){ stopViz(); vizInt=setInterval(()=>{ for(let i=0;i<12;i++){ const b=$('vb'+i); if(b) b.style.height=(Math.random()*26+4)+'px'; } },100); }
-function stopViz(){ if(vizInt){ clearInterval(vizInt); vizInt=null; } for(let i=0;i<12;i++){ const b=$('vb'+i); if(b) b.style.height='4px'; } }
 
-// ── PROCESS ───────────────────────────────────────────────────────────────
-async function processCmd(text){
-  if(!text||!text.trim()||processing) return;
-  processing=true; setState('processing');
-  addMsg('user',text); logAct('You: '+text.substring(0,50));
-  const tid=showTyping();
-  try{
-    const sys=await handleSysCmd(text);
-    if(sys&&sys.handled&&!sys.passToAI){
-      removeTyping(tid);
-      const r=sys.response||'Done, Sir.';
-      addMsg('jarvis',r); if(cfg.ttsEnabled) speak(r); logAct('JARVIS: '+r.substring(0,50));
+function startViz() {
+  stopViz();
+  vizTimer = setInterval(() => {
+    for (let i = 0; i < 12; i++) { const b = $('vb' + i); if (b) b.style.height = (Math.random() * 26 + 4) + 'px'; }
+  }, 100);
+}
+function stopViz() {
+  if (vizTimer) { clearInterval(vizTimer); vizTimer = null; }
+  for (let i = 0; i < 12; i++) { const b = $('vb' + i); if (b) b.style.height = '4px'; }
+}
+
+// ── PROCESS INPUT ─────────────────────────────────────────────────────────────
+async function handleInput(text) {
+  text = text.trim();
+  if (!text || isProcessing) return;
+  isProcessing = true;
+  setState('processing');
+  addMessage('user', text);
+  logActivity('You: ' + text.substring(0, 60));
+  const typingId = showTyping();
+
+  try {
+    // Try system command first
+    const sysResult = await trySystemCommand(text);
+
+    if (sysResult.handled) {
+      removeTyping(typingId);
+      const reply = sysResult.response || 'Done, Sir.';
+      addMessage('jarvis', reply);
+      if (cfg.ttsEnabled) speak(reply);
+      logActivity('JARVIS: ' + reply.substring(0, 60));
     } else {
-      const ai=await callAI(text);
-      removeTyping(tid);
-      const m=ai.clean||ai.msg||'I apologize, Sir. Something went wrong.';
-      addMsg('jarvis',m); if(cfg.ttsEnabled) speak(m); logAct('JARVIS: '+m.substring(0,50));
-      if(ai.cmds&&ai.cmds.length) for(const c of ai.cmds) await runCmd(c);
+      // Fall through to AI
+      const aiResult = await callAI(text);
+      removeTyping(typingId);
+      const reply = aiResult.text || 'I apologize, Sir. Something went wrong.';
+      addMessage('jarvis', reply);
+      if (cfg.ttsEnabled) speak(reply);
+      logActivity('JARVIS: ' + reply.substring(0, 60));
+      // Execute any embedded commands
+      if (aiResult.commands && aiResult.commands.length) {
+        for (const cmd of aiResult.commands) await runSystemCmd(cmd);
+      }
     }
-  } catch(e){
-    removeTyping(tid);
-    const em='I encountered a technical difficulty, Sir. '+e.message;
-    addMsg('jarvis',em); if(cfg.ttsEnabled) speak('I encountered a technical difficulty, Sir.');
-    logAct('ERROR: '+e.message);
+  } catch (err) {
+    removeTyping(typingId);
+    const errMsg = 'I encountered a technical difficulty, Sir. ' + err.message;
+    addMessage('jarvis', errMsg);
+    if (cfg.ttsEnabled) speak('I encountered a technical difficulty, Sir.');
+    logActivity('ERROR: ' + err.message);
   }
-  processing=false; setState('idle');
-  if(voiceTranscript) voiceTranscript.textContent='Listening for commands...';
+
+  isProcessing = false;
+  setState('idle');
+  if (elTranscript) elTranscript.textContent = 'Listening for commands...';
 }
 
-// ── SYSTEM COMMANDS ───────────────────────────────────────────────────────
-async function handleSysCmd(text){
-  const lc=text.toLowerCase().trim();
+// ── SYSTEM COMMANDS ───────────────────────────────────────────────────────────
+async function trySystemCommand(text) {
+  const lc = text.toLowerCase().trim();
 
-  // Time / Date
-  if(lc.match(/^(what.s the )?(time|current time)\??$/))
-    return{handled:true,response:'The current time is '+new Date().toLocaleTimeString()+', Sir.'};
-  if(lc.match(/^(what.s (today.s |the )?(date|day))\??$/))
-    return{handled:true,response:'Today is '+new Date().toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'})+', Sir.'};
+  // Time
+  if (/^(what.?s the )?(time|current time)\??$/.test(lc))
+    return { handled:true, response:'The current time is ' + new Date().toLocaleTimeString() + ', Sir.' };
+  // Date
+  if (/^(what.?s (today.?s |the )?(date|day))\??$/.test(lc))
+    return { handled:true, response:'Today is ' + new Date().toLocaleDateString('en-US',{weekday:'long',year:'numeric',month:'long',day:'numeric'}) + ', Sir.' };
 
-  // Direct command map
-  const map={
-    'screenshot':'screenshot','take a screenshot':'screenshot','capture screen':'screenshot','take screenshot':'screenshot',
-    'volume up':'volume up','increase volume':'volume up','louder':'volume up','turn up volume':'volume up',
-    'volume down':'volume down','decrease volume':'volume down','quieter':'volume down','turn down volume':'volume down',
-    'mute':'mute','mute volume':'mute','silence':'mute','unmute':'mute',
-    'open browser':'open browser','open chrome':'open browser','open edge':'open browser','open firefox':'open browser',
-    'open notepad':'open notepad','open text editor':'open notepad','notepad':'open notepad',
-    'open calculator':'open calculator','open calc':'open calculator','calculator':'open calculator','calc':'open calculator',
-    'open task manager':'open task manager','task manager':'open task manager',
-    'open file manager':'open file manager','open explorer':'open file manager','file explorer':'open file manager',
-    'lock screen':'lock screen','lock computer':'lock screen','lock pc':'lock screen',
-    'show desktop':'show desktop','minimize all':'show desktop','minimise all':'show desktop',
-    'empty recycle bin':'empty recycle bin','clear recycle bin':'empty recycle bin',
-    'open settings':'open settings','windows settings':'open settings',
-    'open paint':'open paint','paint':'open paint',
-    'open spotify':'open spotify','spotify':'open spotify',
-    'open discord':'open discord','discord':'open discord',
-    'open steam':'open steam','steam':'open steam',
-    'open vs code':'open vs code','open vscode':'open vs code','vs code':'open vs code','vscode':'open vs code',
-    'open cmd':'open cmd','open terminal':'open cmd','command prompt':'open cmd',
-    'open powershell':'open powershell','powershell':'open powershell'
+  // Command map: trigger text → command key
+  const triggers = {
+    'screenshot':          'screenshot', 'take a screenshot':'screenshot', 'take screenshot':'screenshot', 'capture screen':'screenshot',
+    'volume up':           'volume up',  'increase volume':'volume up',    'louder':'volume up',  'turn up volume':'volume up',
+    'volume down':         'volume down','decrease volume':'volume down',  'quieter':'volume down','turn down volume':'volume down',
+    'mute':                'mute',       'mute volume':'mute',             'silence':'mute',      'unmute':'mute',
+    'open browser':        'open browser','open chrome':'open browser',    'open edge':'open browser','open firefox':'open browser',
+    'open notepad':        'open notepad','notepad':'open notepad',
+    'open calculator':     'open calculator','open calc':'open calculator','calculator':'open calculator','calc':'open calculator',
+    'open task manager':   'open task manager','task manager':'open task manager',
+    'open file manager':   'open file manager','open explorer':'open file manager','file explorer':'open file manager',
+    'open settings':       'open settings','windows settings':'open settings',
+    'open paint':          'open paint',  'paint':'open paint',
+    'open spotify':        'open spotify','spotify':'open spotify',
+    'open discord':        'open discord','discord':'open discord',
+    'open steam':          'open steam',  'steam':'open steam',
+    'open vs code':        'open vs code','open vscode':'open vs code','vscode':'open vs code','vs code':'open vs code',
+    'open cmd':            'open cmd',    'command prompt':'open cmd','open terminal':'open cmd',
+    'open powershell':     'open powershell','powershell':'open powershell',
+    'lock screen':         'lock screen', 'lock computer':'lock screen','lock pc':'lock screen',
+    'show desktop':        'show desktop','minimize all':'show desktop','minimise all':'show desktop',
+    'empty recycle bin':   'empty recycle bin','clear recycle bin':'empty recycle bin'
   };
-  const resp={
+
+  const responses = {
     'screenshot':'Screenshot captured and saved to your Desktop, Sir.',
     'volume up':'Volume increased, Sir.','volume down':'Volume decreased, Sir.',
-    'mute':'Audio toggled, Sir.','open browser':'Opening your web browser, Sir.',
-    'open notepad':'Opening Notepad, Sir.','open calculator':'Opening Calculator, Sir.',
-    'open task manager':'Opening Task Manager, Sir.','open file manager':'Opening File Explorer, Sir.',
-    'lock screen':'Locking the workstation, Sir.','show desktop':'Showing desktop, Sir.',
-    'empty recycle bin':'Recycle bin emptied, Sir.','open settings':'Opening Windows Settings, Sir.',
-    'open paint':'Opening Paint, Sir.','open spotify':'Opening Spotify, Sir.',
-    'open discord':'Opening Discord, Sir.','open steam':'Opening Steam, Sir.',
-    'open vs code':'Opening VS Code, Sir.','open cmd':'Opening Command Prompt, Sir.',
-    'open powershell':'Opening PowerShell, Sir.'
+    'mute':'Audio toggled, Sir.',
+    'open browser':'Opening your web browser, Sir.',
+    'open notepad':'Opening Notepad, Sir.',
+    'open calculator':'Opening Calculator, Sir.',
+    'open task manager':'Opening Task Manager, Sir.',
+    'open file manager':'Opening File Explorer, Sir.',
+    'open settings':'Opening Windows Settings, Sir.',
+    'open paint':'Opening Paint, Sir.',
+    'open spotify':'Opening Spotify, Sir.',
+    'open discord':'Opening Discord, Sir.',
+    'open steam':'Opening Steam, Sir.',
+    'open vs code':'Opening VS Code, Sir.',
+    'open cmd':'Opening Command Prompt, Sir.',
+    'open powershell':'Opening PowerShell, Sir.',
+    'lock screen':'Locking the workstation, Sir.',
+    'show desktop':'Showing desktop, Sir.',
+    'empty recycle bin':'Recycle bin emptied, Sir.'
   };
 
-  for(const[t,c] of Object.entries(map)){
-    if(lc===t||lc.startsWith(t)){
-      const result = await runCmd(c);
-      return{handled:true,response:resp[c]||c+' done, Sir.'};
+  for (const [trigger, cmdKey] of Object.entries(triggers)) {
+    if (lc === trigger || lc.startsWith(trigger + ' ') || lc.startsWith(trigger)) {
+      await runSystemCmd(cmdKey);
+      return { handled:true, response: responses[cmdKey] || cmdKey + ' done, Sir.' };
     }
   }
 
   // Search
-  if(lc.startsWith('search for ')||lc.startsWith('google ')||lc.startsWith('search ')){
-    const q=text.replace(/^(search for|google|search)\s+/i,'').trim();
-    await runCmd('search for '+q);
-    return{handled:true,response:'Searching Google for "'+q+'", Sir.'};
+  if (lc.startsWith('search for ') || lc.startsWith('google ') || lc.startsWith('search ')) {
+    const q = text.replace(/^(search for|google|search)\s+/i,'').trim();
+    await runSystemCmd('search for ' + q);
+    return { handled:true, response:'Searching Google for "' + q + '", Sir.' };
   }
   // YouTube
-  if((lc.startsWith('play ')&&lc.includes('youtube'))||lc.startsWith('youtube ')){
-    const q=text.replace(/^(play\s+|youtube\s+)/i,'').replace(/on youtube/i,'').trim();
-    await runCmd('play '+q+' on youtube');
-    return{handled:true,response:'Opening YouTube for "'+q+'", Sir.'};
+  if ((lc.startsWith('play ') && lc.includes('youtube')) || lc.startsWith('youtube ')) {
+    const q = text.replace(/^(play\s+|youtube\s+)/i,'').replace(/on youtube/i,'').trim();
+    await runSystemCmd('play ' + q + ' on youtube');
+    return { handled:true, response:'Opening YouTube for "' + q + '", Sir.' };
   }
   // Open website
-  if(lc.startsWith('open ')&&(lc.includes('.com')||lc.includes('.org')||lc.includes('.net')||lc.includes('http'))){
-    const site=text.replace(/^open\s+/i,'').trim();
-    const jb=J(); if(jb) jb.openURL(site.startsWith('http')?site:'https://'+site);
-    return{handled:true,response:'Opening '+site+', Sir.'};
+  if (lc.startsWith('open ') && (lc.includes('.com') || lc.includes('.org') || lc.includes('.net') || lc.includes('http'))) {
+    const site = text.replace(/^open\s+/i,'').trim();
+    if (window.JARVIS) window.JARVIS.openURL(site.startsWith('http') ? site : 'https://' + site);
+    return { handled:true, response:'Opening ' + site + ', Sir.' };
   }
   // Update
-  if(lc.includes('check for update')||lc.includes('update jarvis')||lc==='update'){
-    const jb=J(); if(jb) jb.checkUpdate();
-    return{handled:true,response:'Checking for updates now, Sir.'};
+  if (lc.includes('check for update') || lc.includes('update jarvis') || lc === 'update') {
+    if (window.JARVIS) window.JARVIS.checkUpdate();
+    return { handled:true, response:'Checking for updates now, Sir.' };
   }
 
-  return{handled:false,passToAI:true};
+  return { handled:false };
 }
 
-async function runCmd(cmd){
-  const jb=J();
-  if(jb){ try{ return await jb.runCmd(cmd); }catch(e){ return{ok:false}; } }
-  return{ok:false};
+async function runSystemCmd(cmd) {
+  if (window.JARVIS) {
+    try { return await window.JARVIS.runCmd(cmd); } catch(e) { return { ok:false }; }
+  }
+  return { ok:false };
 }
 
-// ── AI ────────────────────────────────────────────────────────────────────
-async function callAI(text){
-  if(!cfg.apiKey) return fallback(text);
-  const msgs=[
-    {role:'system',content:'You are JARVIS (Just A Rather Very Intelligent System) from Iron Man. You run as a desktop app on the user\'s Windows PC.\n\nPERSONALITY: Intelligent, witty, slightly formal. Address user as "Sir". Speak like movie JARVIS.\n\nPC CONTROL: When you need to execute a system command, include [EXECUTE: command] in your response.\nAvailable commands: screenshot, volume up, volume down, mute, open browser, open notepad, open calculator, open task manager, open file manager, lock screen, show desktop, empty recycle bin, search for QUERY, play QUERY on youtube\n\nKeep responses concise (2-4 sentences). Be helpful and in-character.'},
-    ...history.slice(-10),
-    {role:'user',content:text}
+// ── AI ENGINE ─────────────────────────────────────────────────────────────────
+async function callAI(text) {
+  if (!cfg.apiKey) return fallbackResponse(text);
+
+  const messages = [
+    { role:'system', content:'You are JARVIS (Just A Rather Very Intelligent System) from Iron Man. You are running as a desktop application on the user\'s Windows PC.\n\nPERSONALITY: Highly intelligent, witty, slightly formal. Always address the user as "Sir". Speak like the JARVIS from the Iron Man movies — helpful, precise, occasionally dry humor.\n\nPC CONTROL: When you need to execute a system command, embed it like this: [EXECUTE: command_name]\nAvailable commands: screenshot, volume up, volume down, mute, open browser, open notepad, open calculator, open task manager, open file manager, lock screen, show desktop, empty recycle bin, search for QUERY, play QUERY on youtube\n\nKeep responses concise (2-4 sentences max). Be helpful and stay in character.' },
+    ...chatHistory.slice(-10),
+    { role:'user', content:text }
   ];
-  try{
-    const r=await fetch('https://api.openai.com/v1/chat/completions',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+cfg.apiKey},
-      body:JSON.stringify({model:cfg.model||'gpt-4o-mini',messages:msgs,max_tokens:300,temperature:0.8})
+
+  try {
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', 'Authorization':'Bearer ' + cfg.apiKey },
+      body: JSON.stringify({ model: cfg.model || 'gpt-4o-mini', messages, max_tokens:300, temperature:0.8 })
     });
-    if(!r.ok){ const e=await r.json(); throw new Error(e.error?.message||'HTTP '+r.status); }
-    const d=await r.json();
-    const m=d.choices[0].message.content;
-    history.push({role:'user',content:text},{role:'assistant',content:m});
-    if(history.length>20) history=history.slice(-20);
-    const cmds=[]; const re=/\[EXECUTE:\s*([^\]]+)\]/gi; let mt;
-    while((mt=re.exec(m))!==null) cmds.push(mt[1].trim());
-    return{ok:true,msg:m,clean:m.replace(/\[EXECUTE:[^\]]+\]/gi,'').trim(),cmds};
-  } catch(e){ return{ok:false,msg:aiErr(e.message),clean:aiErr(e.message),cmds:[]}; }
-}
-
-function fallback(text){
-  const lc=text.toLowerCase();
-  const h=new Date().getHours(), g=h<12?'Good morning':h<17?'Good afternoon':'Good evening';
-  if(lc.match(/^(hi|hello|hey)(\s|$)/)) return{ok:true,clean:g+', Sir. All systems operational. How may I assist you?',cmds:[]};
-  if(lc.includes('how are you')||lc.includes('status')||lc.includes('system status')) return{ok:true,clean:'All systems running at optimal efficiency, Sir. Arc reactor output stable.',cmds:[]};
-  if(lc.includes('help')||lc.includes('what can you do')) return{ok:true,clean:'I can control your PC, Sir: adjust volume, take screenshots, open applications, search the web, and more. Add your OpenAI API key in Settings for full AI conversation.',cmds:[]};
-  if(lc.includes('thank')) return{ok:true,clean:'Always a pleasure, Sir.',cmds:[]};
-  if(lc.includes('joke')){
-    const j=["Why don't scientists trust atoms, Sir? Because they make up everything.","Why did the AI go to therapy, Sir? Too many unresolved issues in its training data.","I told my last AI assistant a joke. It said it didn't compute. I said, that's the point, Sir."];
-    return{ok:true,clean:j[Math.floor(Math.random()*j.length)],cmds:[]};
+    if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || 'HTTP ' + res.status); }
+    const data = await res.json();
+    const raw  = data.choices[0].message.content;
+    chatHistory.push({ role:'user', content:text }, { role:'assistant', content:raw });
+    if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
+    const commands = [];
+    const re = /\[EXECUTE:\s*([^\]]+)\]/gi;
+    let m;
+    while ((m = re.exec(raw)) !== null) commands.push(m[1].trim());
+    return { text: raw.replace(/\[EXECUTE:[^\]]+\]/gi,'').trim(), commands };
+  } catch(err) {
+    return { text: aiErrorMsg(err.message), commands:[] };
   }
-  if(lc.includes('who are you')||lc.includes('what are you')) return{ok:true,clean:'I am JARVIS, Sir — Just A Rather Very Intelligent System. Your personal AI assistant, at your service.',cmds:[]};
-  if(lc.includes('iron man')||lc.includes('tony stark')) return{ok:true,clean:'Mr. Stark\'s legacy lives on, Sir. I am honored to serve a new user.',cmds:[]};
-  return{ok:true,clean:'Understood, Sir. To unlock full AI conversation, please add your OpenAI API key in the Settings panel (gear icon, top right). I can still execute all system commands directly.',cmds:[]};
 }
 
-function aiErr(m){
-  if(m.includes('401')||m.includes('invalid_api_key')) return 'Authentication issue, Sir. Your OpenAI API key appears invalid. Please verify it in Settings.';
-  if(m.includes('429')) return 'Rate limit reached, Sir. Please wait a moment before your next request.';
-  if(m.includes('fetch')||m.includes('network')||m.includes('Failed to fetch')) return 'I cannot reach the AI core, Sir. Please check your internet connection.';
+function fallbackResponse(text) {
+  const lc = text.toLowerCase();
+  const h  = new Date().getHours();
+  const g  = h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
+
+  if (/^(hi|hello|hey)(\s|$)/.test(lc)) return { text: g + ', Sir. All systems operational. How may I assist you?', commands:[] };
+  if (lc.includes('how are you') || lc.includes('status') || lc.includes('system status')) return { text:'All systems running at optimal efficiency, Sir. Arc reactor output stable.', commands:[] };
+  if (lc.includes('help') || lc.includes('what can you do')) return { text:'I can control your PC, Sir: adjust volume, take screenshots, open applications, search the web, and more. Add your OpenAI API key in Settings for full AI conversation.', commands:[] };
+  if (lc.includes('thank')) return { text:'Always a pleasure, Sir.', commands:[] };
+  if (lc.includes('joke')) {
+    const jokes = [
+      "Why don't scientists trust atoms, Sir? Because they make up everything.",
+      "Why did the AI go to therapy, Sir? Too many unresolved issues in its training data.",
+      "I told my last AI assistant a joke. It said it didn't compute. I said, that's the point, Sir."
+    ];
+    return { text: jokes[Math.floor(Math.random() * jokes.length)], commands:[] };
+  }
+  if (lc.includes('who are you') || lc.includes('what are you')) return { text:"I am JARVIS, Sir — Just A Rather Very Intelligent System. Your personal AI assistant, at your service.", commands:[] };
+  if (lc.includes('iron man') || lc.includes('tony stark')) return { text:"Mr. Stark's legacy lives on, Sir. I am honored to serve a new user.", commands:[] };
+  return { text:'Understood, Sir. To unlock full AI conversation, please add your OpenAI API key in the Settings panel (gear icon, top right). I can still execute all system commands directly.', commands:[] };
+}
+
+function aiErrorMsg(msg) {
+  if (msg.includes('401') || msg.includes('invalid_api_key')) return 'Authentication issue, Sir. Your OpenAI API key appears invalid. Please verify it in Settings.';
+  if (msg.includes('429')) return 'Rate limit reached, Sir. Please wait a moment before your next request.';
+  if (msg.includes('fetch') || msg.includes('network') || msg.includes('Failed to fetch')) return 'I cannot reach the AI core, Sir. Please check your internet connection.';
   return 'I encountered a technical difficulty, Sir. Please try again.';
 }
 
-// ── CHAT UI ───────────────────────────────────────────────────────────────
-function addMsg(who,text){
-  if(!chatArea) return;
-  const w=chatArea.querySelector('.welcome'); if(w) w.remove();
-  const t=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-  const d=document.createElement('div'); d.className='msg '+who;
-  d.innerHTML='<div class="msg-hdr">'+(who==='user'?'YOU':'JARVIS')+' \u00b7 '+t+'</div><div class="msg-bubble">'+fmt(text)+'</div>';
-  chatArea.appendChild(d); chatArea.scrollTop=chatArea.scrollHeight;
+// ── CHAT UI ───────────────────────────────────────────────────────────────────
+function addMessage(who, text) {
+  if (!elChat) return;
+  const welcome = elChat.querySelector('.welcome');
+  if (welcome) welcome.remove();
+  const time = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+  const div  = document.createElement('div');
+  div.className = 'msg ' + who;
+  div.innerHTML = '<div class="msg-hdr">' + (who === 'user' ? 'YOU' : 'JARVIS') + ' &middot; ' + time + '</div>'
+                + '<div class="msg-bubble">' + formatText(text) + '</div>';
+  elChat.appendChild(div);
+  elChat.scrollTop = elChat.scrollHeight;
 }
-function showTyping(){
-  if(!chatArea) return 'noop';
-  const w=chatArea.querySelector('.welcome'); if(w) w.remove();
-  const id='t'+Date.now();
-  const d=document.createElement('div'); d.id=id; d.className='typing';
-  d.innerHTML='<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
-  chatArea.appendChild(d); chatArea.scrollTop=chatArea.scrollHeight;
+
+function showTyping() {
+  if (!elChat) return 'noop';
+  const welcome = elChat.querySelector('.welcome');
+  if (welcome) welcome.remove();
+  const id  = 'typing-' + Date.now();
+  const div = document.createElement('div');
+  div.id = id; div.className = 'typing';
+  div.innerHTML = '<div class="dot"></div><div class="dot"></div><div class="dot"></div>';
+  elChat.appendChild(div);
+  elChat.scrollTop = elChat.scrollHeight;
   return id;
 }
-function removeTyping(id){ const e=$(id); if(e) e.remove(); }
-function fmt(t){ return esc(t).replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/\*(.*?)\*/g,'<em>$1</em>').replace(/`(.*?)`/g,'<code>$1</code>').replace(/\n/g,'<br>'); }
-function esc(t){ const d=document.createElement('div'); d.appendChild(document.createTextNode(t)); return d.innerHTML; }
 
-function logAct(text){
-  if(!actBox) return;
-  const t=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-  const d=document.createElement('div'); d.className='act';
-  d.innerHTML='<span class="act-t">'+t+'</span>'+esc(text);
-  actBox.insertBefore(d,actBox.firstChild);
-  while(actBox.children.length>30) actBox.removeChild(actBox.lastChild);
+function removeTyping(id) { const el = $(id); if (el) el.remove(); }
+
+function formatText(t) {
+  return escapeHtml(t)
+    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+    .replace(/`(.*?)`/g, '<code>$1</code>')
+    .replace(/\n/g, '<br>');
+}
+function escapeHtml(t) {
+  const d = document.createElement('div');
+  d.appendChild(document.createTextNode(t));
+  return d.innerHTML;
 }
 
-let toastTm=null;
-function toast_(msg,dur=3000){
-  if(!toast) return;
-  toast.textContent=msg; toast.classList.add('show');
-  if(toastTm) clearTimeout(toastTm);
-  toastTm=setTimeout(()=>toast.classList.remove('show'),dur);
+// ── ACTIVITY LOG ──────────────────────────────────────────────────────────────
+function logActivity(text) {
+  if (!elActLog) return;
+  const time = new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
+  const div  = document.createElement('div');
+  div.className = 'act';
+  div.innerHTML = '<span class="act-t">' + time + '</span>' + escapeHtml(text);
+  elActLog.insertBefore(div, elActLog.firstChild);
+  while (elActLog.children.length > 30) elActLog.removeChild(elActLog.lastChild);
 }
 
-// ── STATS ─────────────────────────────────────────────────────────────────
-function updateStats(s){
-  const ca=$('cpuArc'),cv=$('cpuVal'),ra=$('ramArc'),rv=$('ramVal');
-  if(ca&&cv){ ca.style.strokeDashoffset=172-(s.cpu/100)*172; cv.textContent=s.cpu+'%'; ca.style.stroke=s.cpu>80?'#ff3333':s.cpu>60?'#ffaa00':'#00d4ff'; }
-  if(ra&&rv){ ra.style.strokeDashoffset=172-(s.ram/100)*172; rv.textContent=s.ram+'%'; ra.style.stroke=s.ram>85?'#ff3333':s.ram>70?'#ffaa00':'#0066ff'; }
-  const nb=$('netBars');
-  if(nb) nb.querySelectorAll('.nb').forEach(b=>{ b.style.height=(Math.random()*80+10)+'%'; });
-  const nl=$('netLabel'); if(nl) nl.textContent='UPTIME: '+s.uptime+'m';
+// ── TOAST ─────────────────────────────────────────────────────────────────────
+let toastTimer = null;
+function showToast(msg, dur = 3000) {
+  if (!elToast) return;
+  elToast.textContent = msg;
+  elToast.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => elToast.classList.remove('show'), dur);
 }
 
-// ── EVENTS ────────────────────────────────────────────────────────────────
-function bindEvents(){
+// ── STATS ─────────────────────────────────────────────────────────────────────
+function updateStats(s) {
+  const cpuArc = $('cpuArc'), cpuVal = $('cpuVal');
+  const ramArc = $('ramArc'), ramVal = $('ramVal');
+  if (cpuArc && cpuVal) {
+    cpuArc.style.strokeDashoffset = 172 - (s.cpu / 100) * 172;
+    cpuVal.textContent = s.cpu + '%';
+    cpuArc.style.stroke = s.cpu > 80 ? '#ff3333' : s.cpu > 60 ? '#ffaa00' : '#00d4ff';
+  }
+  if (ramArc && ramVal) {
+    ramArc.style.strokeDashoffset = 172 - (s.ram / 100) * 172;
+    ramVal.textContent = s.ram + '%';
+    ramArc.style.stroke = s.ram > 85 ? '#ff3333' : s.ram > 70 ? '#ffaa00' : '#0066ff';
+  }
+  const netBars = $('netBars');
+  if (netBars) netBars.querySelectorAll('.nb').forEach(b => { b.style.height = (Math.random() * 80 + 10) + '%'; });
+  const netLabel = $('netLabel');
+  if (netLabel) netLabel.textContent = 'UPTIME: ' + s.uptime + 'm';
+}
+
+// ── EVENT BINDINGS ────────────────────────────────────────────────────────────
+function bindEvents() {
   // Send button
-  sendBtn.addEventListener('click',()=>{
-    const t=userInput.value.trim();
-    if(t){ userInput.value=''; resize(); processCmd(t); }
+  elSend.addEventListener('click', () => {
+    const t = elInput.value.trim();
+    if (t) { elInput.value = ''; resizeInput(); handleInput(t); }
   });
 
-  // Enter key
-  userInput.addEventListener('keydown',e=>{
-    if(e.key==='Enter'&&!e.shiftKey){
+  // Enter key in textarea
+  elInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      const t=userInput.value.trim();
-      if(t){ userInput.value=''; resize(); processCmd(t); }
+      const t = elInput.value.trim();
+      if (t) { elInput.value = ''; resizeInput(); handleInput(t); }
     }
   });
-
-  userInput.addEventListener('input',resize);
+  elInput.addEventListener('input', resizeInput);
 
   // Mic button
-  micBtn.addEventListener('click',()=>{
-    if(!voice.rec){ toast_('Voice recognition not available in this browser'); return; }
-    if(recording){
-      stopRec(); recording=false;
-      micBtn.classList.remove('recording'); micIcon.textContent='\uD83C\uDF99';
+  elMic.addEventListener('click', () => {
+    if (!voiceRec) { showToast('Voice recognition not available'); return; }
+    if (isListening) {
+      stopListening();
+      elMic.classList.remove('recording');
+      elMicIcon.textContent = '\uD83C\uDF99';
     } else {
-      recording=true; micBtn.classList.add('recording'); micIcon.textContent='\uD83D\uDD34';
-      if(voiceTranscript) voiceTranscript.textContent='Listening...';
-      startRec();
+      elMic.classList.add('recording');
+      elMicIcon.textContent = '\uD83D\uDD34';
+      if (elTranscript) elTranscript.textContent = 'Listening...';
+      startListening();
     }
   });
 
-  // Voice toggle
-  voiceToggle.addEventListener('click',()=>{
-    if(voice.continuous){
-      voice.continuous=false; stopRec();
-      voiceToggle.classList.remove('on'); voiceToggle.textContent='\u25BA ACTIVATE VOICE';
-      setState('idle'); logAct('Voice mode deactivated');
+  // Continuous voice toggle
+  elVoiceBtn.addEventListener('click', () => {
+    if (isContinuous) {
+      isContinuous = false; stopListening();
+      elVoiceBtn.classList.remove('on');
+      elVoiceBtn.textContent = '\u25BA ACTIVATE VOICE';
+      setState('idle'); logActivity('Voice mode deactivated');
     } else {
-      voice.continuous=true;
-      voiceToggle.classList.add('on'); voiceToggle.textContent='\u25A0 DEACTIVATE VOICE';
-      startRec(); logAct('Voice mode activated');
-      toast_('Voice mode active \u2014 speak your command');
+      isContinuous = true;
+      elVoiceBtn.classList.add('on');
+      elVoiceBtn.textContent = '\u25A0 DEACTIVATE VOICE';
+      startListening(); logActivity('Voice mode activated');
+      showToast('Voice mode active \u2014 speak your command');
     }
   });
 
   // Wake word toggle
-  wakeToggle.addEventListener('change',e=>{
-    cfg.wakeWordEnabled=e.target.checked;
-    if(e.target.checked){
-      voice.continuous=true;
-      voiceToggle.classList.add('on'); voiceToggle.textContent='\u25A0 DEACTIVATE VOICE';
-      startRec(); toast_('Wake word mode: Say "Hey JARVIS"');
+  elWakeToggle.addEventListener('change', e => {
+    cfg.wakeWordEnabled = e.target.checked;
+    if (e.target.checked) {
+      isContinuous = true;
+      elVoiceBtn.classList.add('on');
+      elVoiceBtn.textContent = '\u25A0 DEACTIVATE VOICE';
+      startListening(); showToast('Wake word mode: Say "Hey JARVIS"');
     } else {
-      voice.continuous=false; stopRec();
-      voiceToggle.classList.remove('on'); voiceToggle.textContent='\u25BA ACTIVATE VOICE';
+      isContinuous = false; stopListening();
+      elVoiceBtn.classList.remove('on');
+      elVoiceBtn.textContent = '\u25BA ACTIVATE VOICE';
     }
   });
 
   // Quick command buttons
-  document.querySelectorAll('.qcmd').forEach(b=>{
-    b.addEventListener('click',()=>{
-      const c=b.getAttribute('data-cmd');
-      if(c) processCmd(c);
+  document.querySelectorAll('.qcmd').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cmd = btn.getAttribute('data-cmd');
+      if (cmd) handleInput(cmd);
     });
   });
 
   // Window controls
-  btnMin.addEventListener('click',()=>{ const jb=J(); if(jb) jb.minimize(); });
-  btnClose.addEventListener('click',()=>{ const jb=J(); if(jb) jb.hide(); else window.close(); });
+  elBtnMin.addEventListener('click', () => { if (window.JARVIS) window.JARVIS.minimize(); });
+  elBtnClose.addEventListener('click', () => { if (window.JARVIS) window.JARVIS.hide(); else window.close(); });
 
-  // Settings panel
-  btnSettings.addEventListener('click',()=>{
-    const v=settingsPanel.style.display==='block';
-    settingsPanel.style.display=v?'none':'block';
-    btnSettings.style.color=v?'':'var(--p)';
+  // Settings panel toggle
+  elBtnSettings.addEventListener('click', () => {
+    const visible = elSettings.style.display === 'block';
+    elSettings.style.display = visible ? 'none' : 'block';
+    elBtnSettings.style.color = visible ? '' : 'var(--p)';
   });
 
   // Save settings
-  $('saveBtn').addEventListener('click',()=>{
-    const nc={
-      apiKey:$('apiKeyInput').value.trim(),
-      model:$('modelSelect').value,
+  $('saveBtn').addEventListener('click', () => {
+    const newCfg = {
+      apiKey:          $('apiKeyInput').value.trim(),
+      model:           $('modelSelect').value,
       startWithWindows:$('startupToggle').checked,
-      ttsEnabled:$('ttsToggle').checked,
-      autoUpdate:$('autoUpdateToggle').checked
+      ttsEnabled:      $('ttsToggle').checked,
+      autoUpdate:      $('autoUpdateToggle').checked
     };
-    cfg={...cfg,...nc};
-    const jb=J(); if(jb) jb.saveCfg(nc);
-    updateAIPill();
-    settingsPanel.style.display='none'; btnSettings.style.color='';
-    toast_('Settings saved, Sir.'); logAct('Settings updated');
-    if(!nc.ttsEnabled&&window.speechSynthesis) window.speechSynthesis.cancel();
+    cfg = Object.assign({}, cfg, newCfg);
+    if (window.JARVIS) window.JARVIS.saveCfg(newCfg);
+    refreshAIPill();
+    elSettings.style.display = 'none';
+    elBtnSettings.style.color = '';
+    showToast('Settings saved, Sir.');
+    logActivity('Settings updated');
+    if (!newCfg.ttsEnabled && voiceSynth) voiceSynth.cancel();
   });
 
-  $('checkUpdateBtn').addEventListener('click',()=>{
-    const jb=J(); if(jb) jb.checkUpdate();
-    toast_('Checking for updates...',2000);
+  // Check updates button
+  $('checkUpdateBtn').addEventListener('click', () => {
+    if (window.JARVIS) window.JARVIS.checkUpdate();
+    showToast('Checking for updates...', 2000);
   });
 
-  $('viewLogsBtn').addEventListener('click',()=>{
-    const jb=J();
-    if(jb) jb.appInfo().then(info=>{ jb.openURL('file:///'+info.userData.replace(/\\/g,'/')+'/jarvis.log'); });
+  // View logs button
+  $('viewLogsBtn').addEventListener('click', () => {
+    showToast('Log file is in your AppData/Roaming/jarvis-ai folder, Sir.', 4000);
   });
 
-  userInput.focus();
+  elInput.focus();
 }
 
-function resize(){ userInput.style.height='auto'; userInput.style.height=Math.min(userInput.scrollHeight,100)+'px'; }
+function resizeInput() {
+  elInput.style.height = 'auto';
+  elInput.style.height = Math.min(elInput.scrollHeight, 100) + 'px';
+}
 
-// ── IPC ───────────────────────────────────────────────────────────────────
-function bindIPC(){
-  const jb=J();
-  if(!jb) return;
+// ── IPC BINDINGS ──────────────────────────────────────────────────────────────
+function bindIPC() {
+  if (!window.JARVIS) return;
 
-  jb.onStats(s=>updateStats(s));
+  window.JARVIS.onStats(s => updateStats(s));
 
-  jb.onVoice(()=>{
-    if(!recording){
-      recording=true;
-      if(micBtn) micBtn.classList.add('recording');
-      if(micIcon) micIcon.textContent='\uD83D\uDD34';
-      startRec(); toast_('Voice activated');
+  window.JARVIS.onVoice(() => {
+    if (!isListening) {
+      if (elMic) elMic.classList.add('recording');
+      if (elMicIcon) elMicIcon.textContent = '\uD83D\uDD34';
+      startListening(); showToast('Voice activated');
     }
   });
 
-  jb.onSettings(()=>{
-    if(settingsPanel) settingsPanel.style.display='block';
-    if(btnSettings) btnSettings.style.color='var(--p)';
+  window.JARVIS.onSettings(() => {
+    if (elSettings) elSettings.style.display = 'block';
+    if (elBtnSettings) elBtnSettings.style.color = 'var(--p)';
   });
 
-  jb.onUpdateStatus(msg=>{
-    logAct('UPDATE: '+msg);
-    const lc=msg.toLowerCase();
-    if(lc.includes('downloading')||lc.includes('update found')){ setState('updating'); toast_(msg,4000); }
-    else if(lc.includes('up to date')) toast_('JARVIS is up to date',2000);
-    else if(lc.includes('restarting')){ addMsg('jarvis','Update complete, Sir. Restarting now.'); if(cfg.ttsEnabled) speak('Update complete, Sir. Restarting now.'); toast_('Restarting JARVIS...',3000); }
-    else if(msg) toast_(msg,3000);
+  window.JARVIS.onUpdateStatus(msg => {
+    if (!msg) return;
+    logActivity('UPDATE: ' + msg);
+    const lc = msg.toLowerCase();
+    if (lc.includes('downloading') || lc.includes('update found')) { setState('updating'); showToast(msg, 4000); }
+    else if (lc.includes('up to date')) showToast('JARVIS is up to date', 2000);
+    else if (lc.includes('restarting')) {
+      addMessage('jarvis', 'Update complete, Sir. Restarting now.');
+      if (cfg.ttsEnabled) speak('Update complete, Sir. Restarting now.');
+      showToast('Restarting JARVIS...', 3000);
+    }
+    else showToast(msg, 3000);
   });
 }
 
-// ── BOOT ──────────────────────────────────────────────────────────────────
+// ── BOOT ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', init);

@@ -51,7 +51,7 @@ const pc=document.getElementById("particles");
 for(let i=0;i<20;i++){const p=document.createElement("div");p.className="particle";const a=Math.random()*360,r=60+Math.random()*40;p.style.left=(50+r*Math.cos(a*Math.PI/180))+"%";p.style.top=(50+r*Math.sin(a*Math.PI/180))+"%";p.style.animationDuration=(2+Math.random()*3)+"s";p.style.animationDelay=(Math.random()*3)+"s";pc.appendChild(p);}
 const bar=document.getElementById("bar"),st=document.getElementById("st");
 let pct=0;
-if(window.J){window.J.onStatus(msg=>{st.textContent=msg;pct=Math.min(95,pct+9);bar.style.width=pct+"%";});}
+if(window.JARVIS){window.JARVIS.onStatus(msg=>{st.textContent=msg;pct=Math.min(95,pct+9);bar.style.width=pct+"%";});}
 else{const steps=["Initializing...","Checking for updates...","Loading core modules...","Initializing voice system...","Connecting AI core...","Loading memory system...","Finalizing interface..."];let i=0;setInterval(()=>{if(i<steps.length){st.textContent=steps[i++];pct=Math.min(95,pct+13);bar.style.width=pct+"%";}},700);}
 </script>
 </body>
