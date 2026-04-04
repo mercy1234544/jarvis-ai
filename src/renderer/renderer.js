@@ -17,7 +17,9 @@ let cfg = {
   ttsEnabled: true,
   startWithWindows: false,
   autoUpdate: true,
-  wakeWordEnabled: false
+  wakeWordEnabled: false,
+  elevenKey: '',
+  elevenVoice: 'onwK4e9ZLuTAKqWW03F9'
 };
 
 // Voice state
@@ -104,6 +106,10 @@ function applySettings() {
   if (st) st.checked = !!cfg.startWithWindows;
   const tt = document.getElementById('ttsToggle');
   if (tt) tt.checked = cfg.ttsEnabled !== false;
+  const ek = document.getElementById('elevenKeyInput');
+  if (ek) ek.value = cfg.elevenKey || '';
+  const ev = document.getElementById('elevenVoiceSelect');
+  if (ev && cfg.elevenVoice) ev.value = cfg.elevenVoice;
   const au = document.getElementById('autoUpdateToggle');
   if (au) au.checked = cfg.autoUpdate !== false;
   refreshAIPill();
@@ -390,49 +396,73 @@ function speakAndResume(text, cb) {
   });
 }
 
-function speak(text, cb) {
-  if (!cfg.ttsEnabled || !window.speechSynthesis) {
-    if (cb) cb();
-    return;
-  }
-  window.speechSynthesis.cancel();
-  voiceState = 'speaking';
-  setState('speaking');
-
-  // Clean markdown from text
-  const clean = text
+function cleanForSpeech(text) {
+  return text
     .replace(/\*\*(.*?)\*\*/g, '$1')
     .replace(/\*(.*?)\*/g, '$1')
     .replace(/`(.*?)`/g, '$1')
     .replace(/#{1,6}\s/g, '')
     .replace(/\[EXECUTE:[^\]]+\]/gi, '')
     .replace(/\n+/g, '. ')
-    .substring(0, 500);
+    .substring(0, 600);
+}
 
+async function speakElevenLabs(text, cb) {
+  try {
+    const voiceId = cfg.elevenVoice || 'onwK4e9ZLuTAKqWW03F9';
+    const resp = await fetch('https://api.elevenlabs.io/v1/text-to-speech/' + voiceId + '/stream', {
+      method: 'POST',
+      headers: {
+        'xi-api-key': cfg.elevenKey,
+        'Content-Type': 'application/json',
+        'Accept': 'audio/mpeg'
+      },
+      body: JSON.stringify({
+        text: text,
+        model_id: 'eleven_turbo_v2',
+        voice_settings: { stability: 0.55, similarity_boost: 0.85, style: 0.2, use_speaker_boost: true }
+      })
+    });
+    if (!resp.ok) throw new Error('ElevenLabs HTTP ' + resp.status);
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.onended = () => { URL.revokeObjectURL(url); setState('idle'); if (cb) cb(); };
+    audio.onerror = () => { URL.revokeObjectURL(url); speakBrowser(text, cb); };
+    await audio.play();
+  } catch(e) {
+    console.warn('ElevenLabs TTS failed, falling back to browser voice:', e.message);
+    speakBrowser(text, cb);
+  }
+}
+
+function speakBrowser(text, cb) {
+  if (!window.speechSynthesis) { setState('idle'); if (cb) cb(); return; }
+  window.speechSynthesis.cancel();
+  const clean = cleanForSpeech(text);
   const u = new SpeechSynthesisUtterance(clean);
   if (preferredVoice) u.voice = preferredVoice;
-  u.rate = 0.92;
-  u.pitch = 0.85;
+  u.rate = 0.88;
+  u.pitch = 0.82;
   u.volume = 1.0;
   u.lang = 'en-GB';
-
   u.onstart = () => setState('speaking');
-  u.onend = () => {
-    setState('idle');
-    if (cb) cb();
-  };
-  u.onerror = (e) => {
-    console.warn('TTS error:', e);
-    setState('idle');
-    if (cb) cb();
-  };
-
-  // Chrome bug: speechSynthesis sometimes pauses. Kick it.
-  setTimeout(() => {
-    if (window.speechSynthesis.paused) window.speechSynthesis.resume();
-  }, 100);
-
+  u.onend = () => { setState('idle'); if (cb) cb(); };
+  u.onerror = (e) => { console.warn('Browser TTS error:', e); setState('idle'); if (cb) cb(); };
+  setTimeout(() => { if (window.speechSynthesis.paused) window.speechSynthesis.resume(); }, 100);
   window.speechSynthesis.speak(u);
+}
+
+function speak(text, cb) {
+  if (!cfg.ttsEnabled) { if (cb) cb(); return; }
+  voiceState = 'speaking';
+  setState('speaking');
+  const clean = cleanForSpeech(text);
+  if (cfg.elevenKey && cfg.elevenKey.length > 10) {
+    speakElevenLabs(clean, cb);
+  } else {
+    speakBrowser(clean, cb);
+  }
 }
 
 // ── STATE DISPLAY ─────────────────────────────────────────────────────────────
@@ -892,7 +922,9 @@ function bindEvents() {
       model: document.getElementById('modelSelect').value,
       startWithWindows: document.getElementById('startupToggle').checked,
       ttsEnabled: document.getElementById('ttsToggle').checked,
-      autoUpdate: document.getElementById('autoUpdateToggle').checked
+      autoUpdate: document.getElementById('autoUpdateToggle').checked,
+      elevenKey: (document.getElementById('elevenKeyInput') || {}).value || '',
+      elevenVoice: (document.getElementById('elevenVoiceSelect') || {}).value || 'onwK4e9ZLuTAKqWW03F9'
     };
     cfg = { ...cfg, ...nc };
     const j = getJ();
