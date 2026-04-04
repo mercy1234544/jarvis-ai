@@ -1,5 +1,12 @@
 'use strict';
 const { app, BrowserWindow, Tray, Menu, ipcMain, globalShortcut, shell, nativeImage } = require('electron');
+
+// ── Chromium Flags ───────────────────────────────────────────
+// These flags ensure microphone access is granted without user interaction
+app.commandLine.appendSwitch('use-fake-ui-for-media-stream');
+app.commandLine.appendSwitch('enable-speech-input');
+app.commandLine.appendSwitch('ignore-certificate-errors');
+app.commandLine.appendSwitch('allow-file-access-from-files');
 const path = require('path');
 const fs   = require('fs');
 const os   = require('os');

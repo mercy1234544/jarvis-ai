@@ -237,7 +237,7 @@ function setupVoice() {
       const lc = text.toLowerCase();
 
       if (cfg.wakeWordEnabled) {
-        if (lc.includes('hey jarvis') || lc.includes('jarvis')) {
+        if (lc.includes('hey jarvis') || lc.includes('jarvis') || lc.includes('service') || lc.includes('travis')) {
           // Extract command after wake word
           let cmd = text.replace(/hey jarvis/gi, '').replace(/jarvis/gi, '').trim();
           // Remove leading punctuation if any
@@ -250,7 +250,7 @@ function setupVoice() {
     };
 
     r.onerror = (e) => {
-      console.warn('Voice error:', e.error);
+      console.warn('Voice error:', e.error); _voicePaused = false;
       if (e.error === 'not-allowed') {
         stopVoiceMode();
         return;
