@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' https://api.openai.com; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src https://api.openai.com https://api.github.com">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src *">
 <title>JARVIS</title>
 <style>
 :root{--p:#00d4ff;--p2:#0066ff;--bg:#000810;--bg2:#000f1e;--bg3:#001428;--border:rgba(0,180,255,0.12);--text:rgba(0,220,255,0.85);--dim:rgba(0,180,255,0.4);}
@@ -220,10 +220,28 @@ input:checked+.sw-slider:before{transform:translateX(14px);background:var(--p);}
 </div>
 <div id="settingsPanel">
   <div class="sp-title">&#9881; JARVIS SETTINGS</div>
+
   <div class="sp-row">
-    <label class="sp-label">OPENAI API KEY</label>
-    <input class="sp-input" type="password" id="apiKeyInput" placeholder="sk-...">
+    <label class="sp-label">AI PROVIDER</label>
+    <select class="sp-select" id="providerSelect">
+      <option value="openai">OpenAI (GPT-4o, GPT-3.5)</option>
+      <option value="gemini">Google Gemini</option>
+      <option value="claude">Anthropic Claude</option>
+      <option value="ollama">Ollama (Local / Free)</option>
+      <option value="none">No AI (Commands Only)</option>
+    </select>
   </div>
+
+  <div class="sp-row" id="rowApiKey">
+    <label class="sp-label" id="labelApiKey">API KEY</label>
+    <input class="sp-input" type="password" id="apiKeyInput" placeholder="Paste your API key...">
+  </div>
+
+  <div class="sp-row" id="rowOllamaUrl" style="display:none">
+    <label class="sp-label">OLLAMA URL</label>
+    <input class="sp-input" type="text" id="ollamaUrlInput" placeholder="http://localhost:11434">
+  </div>
+
   <div class="sp-row">
     <label class="sp-label">AI MODEL</label>
     <select class="sp-select" id="modelSelect">
@@ -232,6 +250,7 @@ input:checked+.sw-slider:before{transform:translateX(14px);background:var(--p);}
       <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Economy)</option>
     </select>
   </div>
+
   <div class="sp-row">
     <div class="sp-row-h">
       <span class="sp-label">LAUNCH ON STARTUP</span>

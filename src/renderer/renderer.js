@@ -6,7 +6,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // State
-let cfg = { apiKey:'', model:'gpt-4o-mini', ttsEnabled:true, startWithWindows:false, autoUpdate:true, wakeWordEnabled:false };
+let cfg = { provider:'openai', apiKey:'', model:'gpt-4o-mini', ollamaUrl:'http://localhost:11434', ttsEnabled:true, startWithWindows:false, autoUpdate:true, wakeWordEnabled:false };
 let voiceRec = null, voiceSynth = window.speechSynthesis, preferredVoice = null;
 let isListening = false, isContinuous = false, isProcessing = false;
 let chatHistory = [], vizTimer = null;
@@ -68,7 +68,9 @@ async function init() {
 
 // ── SETTINGS ─────────────────────────────────────────────────────────────────
 function applySettings() {
+  if ($('providerSelect'))   { $('providerSelect').value   = cfg.provider || 'openai'; onProviderChange(); }
   if ($('apiKeyInput'))      $('apiKeyInput').value      = cfg.apiKey || '';
+  if ($('ollamaUrlInput'))   $('ollamaUrlInput').value   = cfg.ollamaUrl || 'http://localhost:11434';
   if ($('modelSelect'))      $('modelSelect').value      = cfg.model  || 'gpt-4o-mini';
   if ($('startupToggle'))    $('startupToggle').checked  = !!cfg.startWithWindows;
   if ($('ttsToggle'))        $('ttsToggle').checked      = cfg.ttsEnabled !== false;
@@ -76,10 +78,51 @@ function applySettings() {
   refreshAIPill();
 }
 
+// Called when provider dropdown changes — updates labels, model list, shows/hides fields
+function onProviderChange() {
+  const p = $('providerSelect') ? $('providerSelect').value : 'openai';
+  const rowKey = $('rowApiKey'), rowOllama = $('rowOllamaUrl');
+  const labelKey = $('labelApiKey'), modelSel = $('modelSelect');
+
+  if (p === 'ollama') {
+    if (rowKey)    rowKey.style.display    = 'none';
+    if (rowOllama) rowOllama.style.display = 'block';
+  } else if (p === 'none') {
+    if (rowKey)    rowKey.style.display    = 'none';
+    if (rowOllama) rowOllama.style.display = 'none';
+  } else {
+    if (rowKey)    rowKey.style.display    = 'block';
+    if (rowOllama) rowOllama.style.display = 'none';
+  }
+
+  // Update label and placeholder
+  const labels = { openai:'OPENAI API KEY', gemini:'GOOGLE GEMINI API KEY', claude:'ANTHROPIC API KEY', ollama:'', none:'' };
+  const placeholders = { openai:'sk-...', gemini:'AIza...', claude:'sk-ant-...', ollama:'', none:'' };
+  if (labelKey) labelKey.textContent = labels[p] || 'API KEY';
+  const inp = $('apiKeyInput');
+  if (inp) inp.placeholder = placeholders[p] || 'Paste your API key...';
+
+  // Update model list
+  const models = {
+    openai:  [['gpt-4o-mini','GPT-4o Mini (Fast)'],['gpt-4o','GPT-4o (Smart)'],['gpt-3.5-turbo','GPT-3.5 Turbo (Economy)'],['o1-mini','o1 Mini']],
+    gemini:  [['gemini-2.0-flash','Gemini 2.0 Flash (Fast)'],['gemini-1.5-pro','Gemini 1.5 Pro (Smart)'],['gemini-1.5-flash','Gemini 1.5 Flash']],
+    claude:  [['claude-3-5-haiku-20241022','Claude 3.5 Haiku (Fast)'],['claude-3-5-sonnet-20241022','Claude 3.5 Sonnet (Smart)'],['claude-3-opus-20240229','Claude 3 Opus (Best)']],
+    ollama:  [['llama3.2','Llama 3.2'],['llama3.1','Llama 3.1'],['mistral','Mistral'],['gemma2','Gemma 2'],['phi3','Phi-3'],['custom','Custom (type below)']],
+    none:    [['none','No AI']]
+  };
+  if (modelSel) {
+    const opts = models[p] || models.openai;
+    modelSel.innerHTML = opts.map(([v,l]) => '<option value="' + v + '">' + l + '</option>').join('');
+  }
+}
+
 function refreshAIPill() {
   if (!elAIPill) return;
-  if (cfg.apiKey) {
-    elAIPill.textContent = 'AI CORE ACTIVE';
+  const p = cfg.provider || 'openai';
+  const hasKey = cfg.apiKey || p === 'ollama' || p === 'none';
+  const providerNames = { openai:'OPENAI', gemini:'GEMINI', claude:'CLAUDE', ollama:'OLLAMA (LOCAL)', none:'COMMANDS ONLY' };
+  if (hasKey) {
+    elAIPill.textContent = (providerNames[p] || p.toUpperCase()) + ' ACTIVE';
     elAIPill.classList.add('active');
     elAIPill.style.cssText = '';
   } else {
@@ -358,34 +401,107 @@ async function runSystemCmd(cmd) {
 }
 
 // ── AI ENGINE ─────────────────────────────────────────────────────────────────
+const SYSTEM_PROMPT = 'You are JARVIS (Just A Rather Very Intelligent System) from Iron Man. You are running as a desktop application on the user\'s Windows PC.\n\nPERSONALITY: Highly intelligent, witty, slightly formal. Always address the user as "Sir". Speak like the JARVIS from the Iron Man movies — helpful, precise, occasionally dry humor.\n\nPC CONTROL: When you need to execute a system command, embed it like this: [EXECUTE: command_name]\nAvailable commands: screenshot, volume up, volume down, mute, open browser, open notepad, open calculator, open task manager, open file manager, lock screen, show desktop, empty recycle bin, search for QUERY, play QUERY on youtube\n\nKeep responses concise (2-4 sentences max). Be helpful and stay in character.';
+
+function extractCommands(raw) {
+  const commands = [];
+  const re = /\[EXECUTE:\s*([^\]]+)\]/gi;
+  let m;
+  while ((m = re.exec(raw)) !== null) commands.push(m[1].trim());
+  return { text: raw.replace(/\[EXECUTE:[^\]]+\]/gi,'').trim(), commands };
+}
+
+function updateHistory(userText, assistantText) {
+  chatHistory.push({ role:'user', content:userText }, { role:'assistant', content:assistantText });
+  if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
+}
+
 async function callAI(text) {
+  const p = cfg.provider || 'openai';
+  if (p === 'none') return fallbackResponse(text);
+  if (p === 'ollama') return callOllama(text);
   if (!cfg.apiKey) return fallbackResponse(text);
+  if (p === 'gemini') return callGemini(text);
+  if (p === 'claude') return callClaude(text);
+  return callOpenAI(text);
+}
 
-  const messages = [
-    { role:'system', content:'You are JARVIS (Just A Rather Very Intelligent System) from Iron Man. You are running as a desktop application on the user\'s Windows PC.\n\nPERSONALITY: Highly intelligent, witty, slightly formal. Always address the user as "Sir". Speak like the JARVIS from the Iron Man movies — helpful, precise, occasionally dry humor.\n\nPC CONTROL: When you need to execute a system command, embed it like this: [EXECUTE: command_name]\nAvailable commands: screenshot, volume up, volume down, mute, open browser, open notepad, open calculator, open task manager, open file manager, lock screen, show desktop, empty recycle bin, search for QUERY, play QUERY on youtube\n\nKeep responses concise (2-4 sentences max). Be helpful and stay in character.' },
-    ...chatHistory.slice(-10),
-    { role:'user', content:text }
-  ];
-
+// ── OpenAI ────────────────────────────────────────────────────────────────────
+async function callOpenAI(text) {
+  const messages = [{ role:'system', content:SYSTEM_PROMPT }, ...chatHistory.slice(-10), { role:'user', content:text }];
   try {
     const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type':'application/json', 'Authorization':'Bearer ' + cfg.apiKey },
-      body: JSON.stringify({ model: cfg.model || 'gpt-4o-mini', messages, max_tokens:300, temperature:0.8 })
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer ' + cfg.apiKey },
+      body:JSON.stringify({ model:cfg.model || 'gpt-4o-mini', messages, max_tokens:300, temperature:0.8 })
     });
     if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || 'HTTP ' + res.status); }
     const data = await res.json();
     const raw  = data.choices[0].message.content;
-    chatHistory.push({ role:'user', content:text }, { role:'assistant', content:raw });
-    if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
-    const commands = [];
-    const re = /\[EXECUTE:\s*([^\]]+)\]/gi;
-    let m;
-    while ((m = re.exec(raw)) !== null) commands.push(m[1].trim());
-    return { text: raw.replace(/\[EXECUTE:[^\]]+\]/gi,'').trim(), commands };
-  } catch(err) {
-    return { text: aiErrorMsg(err.message), commands:[] };
+    updateHistory(text, raw);
+    return extractCommands(raw);
+  } catch(err) { return { text:aiErrorMsg(err.message, 'openai'), commands:[] }; }
+}
+
+// ── Google Gemini ─────────────────────────────────────────────────────────────
+async function callGemini(text) {
+  const model = cfg.model || 'gemini-2.0-flash';
+  const url   = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + cfg.apiKey;
+  const contents = [];
+  // Build history in Gemini format
+  for (let i = 0; i < chatHistory.slice(-10).length; i++) {
+    const m = chatHistory.slice(-10)[i];
+    contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts:[{ text: m.content }] });
   }
+  contents.push({ role:'user', parts:[{ text: SYSTEM_PROMPT + '\n\nUser: ' + text }] });
+  try {
+    const res = await fetch(url, {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body:JSON.stringify({ contents, generationConfig:{ maxOutputTokens:300, temperature:0.8 } })
+    });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || 'HTTP ' + res.status); }
+    const data = await res.json();
+    const raw  = data.candidates[0].content.parts[0].text;
+    updateHistory(text, raw);
+    return extractCommands(raw);
+  } catch(err) { return { text:aiErrorMsg(err.message, 'gemini'), commands:[] }; }
+}
+
+// ── Anthropic Claude ──────────────────────────────────────────────────────────
+async function callClaude(text) {
+  const msgs = [...chatHistory.slice(-10), { role:'user', content:text }];
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'x-api-key':cfg.apiKey, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
+      body:JSON.stringify({ model:cfg.model || 'claude-3-5-haiku-20241022', max_tokens:300, system:SYSTEM_PROMPT, messages:msgs })
+    });
+    if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || 'HTTP ' + res.status); }
+    const data = await res.json();
+    const raw  = data.content[0].text;
+    updateHistory(text, raw);
+    return extractCommands(raw);
+  } catch(err) { return { text:aiErrorMsg(err.message, 'claude'), commands:[] }; }
+}
+
+// ── Ollama (local) ────────────────────────────────────────────────────────────
+async function callOllama(text) {
+  const base = (cfg.ollamaUrl || 'http://localhost:11434').replace(/\/$/, '');
+  const model = cfg.model || 'llama3.2';
+  const messages = [{ role:'system', content:SYSTEM_PROMPT }, ...chatHistory.slice(-10), { role:'user', content:text }];
+  try {
+    const res = await fetch(base + '/api/chat', {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body:JSON.stringify({ model, messages, stream:false })
+    });
+    if (!res.ok) throw new Error('Ollama HTTP ' + res.status + '. Is Ollama running?');
+    const data = await res.json();
+    const raw  = data.message?.content || data.response || '';
+    updateHistory(text, raw);
+    return extractCommands(raw);
+  } catch(err) { return { text:aiErrorMsg(err.message, 'ollama'), commands:[] }; }
 }
 
 function fallbackResponse(text) {
@@ -410,11 +526,12 @@ function fallbackResponse(text) {
   return { text:'Understood, Sir. To unlock full AI conversation, please add your OpenAI API key in the Settings panel (gear icon, top right). I can still execute all system commands directly.', commands:[] };
 }
 
-function aiErrorMsg(msg) {
-  if (msg.includes('401') || msg.includes('invalid_api_key')) return 'Authentication issue, Sir. Your OpenAI API key appears invalid. Please verify it in Settings.';
-  if (msg.includes('429')) return 'Rate limit reached, Sir. Please wait a moment before your next request.';
+function aiErrorMsg(msg, provider) {
+  if (msg.includes('401') || msg.includes('invalid_api_key') || msg.includes('API_KEY_INVALID')) return 'Authentication failed, Sir. Your ' + (provider || 'AI') + ' API key appears invalid. Please verify it in Settings.';
+  if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) return 'Rate limit reached, Sir. Please wait a moment before your next request.';
+  if (msg.includes('Ollama') || msg.includes('localhost') || msg.includes('ECONNREFUSED')) return 'Cannot connect to Ollama, Sir. Please ensure Ollama is running on your machine.';
   if (msg.includes('fetch') || msg.includes('network') || msg.includes('Failed to fetch')) return 'I cannot reach the AI core, Sir. Please check your internet connection.';
-  return 'I encountered a technical difficulty, Sir. Please try again.';
+  return 'I encountered a technical difficulty, Sir. ' + msg.substring(0, 80);
 }
 
 // ── CHAT UI ───────────────────────────────────────────────────────────────────
@@ -583,10 +700,16 @@ function bindEvents() {
     elBtnSettings.style.color = visible ? '' : 'var(--p)';
   });
 
+  // Provider change event
+  const provSel = $('providerSelect');
+  if (provSel) provSel.addEventListener('change', onProviderChange);
+
   // Save settings
   $('saveBtn').addEventListener('click', () => {
     const newCfg = {
+      provider:        $('providerSelect') ? $('providerSelect').value : 'openai',
       apiKey:          $('apiKeyInput').value.trim(),
+      ollamaUrl:       $('ollamaUrlInput') ? ($('ollamaUrlInput').value.trim() || 'http://localhost:11434') : 'http://localhost:11434',
       model:           $('modelSelect').value,
       startWithWindows:$('startupToggle').checked,
       ttsEnabled:      $('ttsToggle').checked,
@@ -598,7 +721,7 @@ function bindEvents() {
     elSettings.style.display = 'none';
     elBtnSettings.style.color = '';
     showToast('Settings saved, Sir.');
-    logActivity('Settings updated');
+    logActivity('Settings updated — provider: ' + newCfg.provider);
     if (!newCfg.ttsEnabled && voiceSynth) voiceSynth.cancel();
   });
 
