@@ -199,6 +199,7 @@ let _visualizerActive = false;
 let _debugOverlay = null;
 let _stallTimer = null;
 let _lastAudioTime = Date.now();
+let _rebindTimer = null;
 
 function showVoiceDebug(msg, color = 'var(--p)') {
   if (!_debugOverlay) {
@@ -223,6 +224,16 @@ async function startVisualizer() {
     _visualizerActive = true;
     showVoiceDebug('Microphone stream active', '#0f0');
     updateVisualizer();
+    
+    // NUCLEAR OPTION: Force re-bind every 15 seconds to break system blocks
+    if (!_rebindTimer) {
+      _rebindTimer = setInterval(() => {
+        if (_voiceActive && !_voicePaused && !_interimTranscript) {
+          showVoiceDebug('FORCE RE-BIND: Refreshing Mic Connection...', '#f44');
+          _restartRec();
+        }
+      }, 15000);
+    }
   } catch (e) {
     showVoiceDebug('Microphone error: ' + e.message, '#f44');
     console.warn('Visualizer error:', e);
@@ -232,6 +243,7 @@ async function startVisualizer() {
 function stopVisualizer() {
   _visualizerActive = false;
   if (_micStream) { _micStream.getTracks().forEach(t => t.stop()); _micStream = null; }
+  if (_rebindTimer) { clearInterval(_rebindTimer); _rebindTimer = null; }
   showVoiceDebug('Microphone stream stopped');
 }
 
