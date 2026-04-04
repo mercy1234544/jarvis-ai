@@ -197,6 +197,7 @@ let _analyser = null;
 let _micStream = null;
 let _visualizerActive = false;
 let _debugOverlay = null;
+let _silenceTimer = null;
 
 function showVoiceDebug(msg, color = 'var(--p)') {
   if (!_debugOverlay) {
@@ -252,8 +253,18 @@ function updateVisualizer() {
       voiceTranscript.textContent = 'Hearing audio...';
     }
     showVoiceDebug(`Audio Level: ${Math.round(avg)} (Hearing you)`, '#0f0');
+    // If we hear audio but no transcript for 5 seconds, force a restart
+    if (!_silenceTimer) {
+      _silenceTimer = setTimeout(() => {
+        if (_voiceActive && !_voicePaused && !_interimTranscript) {
+          showVoiceDebug('Stall detected: Restarting engine...', '#f44');
+          _restartRec();
+        }
+      }, 5000);
+    }
   } else {
     showVoiceDebug(`Audio Level: ${Math.round(avg)} (Silence)`);
+    if (_silenceTimer) { clearTimeout(_silenceTimer); _silenceTimer = null; }
   }
   requestAnimationFrame(updateVisualizer);
 }
@@ -307,7 +318,7 @@ function setupVoice() {
             _interimTranscript = '';
             _pauseAndProcess(null, text);
           }
-        }, 4000);
+        }, 3000);
       }
       if (!final) return;
       if (_forceProcessTimer) clearTimeout(_forceProcessTimer);
