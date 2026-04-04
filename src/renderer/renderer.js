@@ -261,14 +261,36 @@ function setupVoice() {
     return;
   }
 
-  function createRec() {
+
+let _interimTranscript = '';
+let _forceProcessTimer = null;
+
+function _clearForceTimer() {
+  if (_forceProcessTimer) { clearTimeout(_forceProcessTimer); _forceProcessTimer = null; }
+}
+
+function _startForceTimer() {
+  _clearForceTimer();
+  _forceProcessTimer = setTimeout(() => {
+    if (_interimTranscript.trim() && !_voicePaused) {
+      console.log('Force processing interim transcript:', _interimTranscript);
+      const text = _interimTranscript.trim();
+      _interimTranscript = '';
+      _pauseAndProcess(null, text);
+    }
+  }, 3500); // 3.5 seconds of silence/no final result
+}
+
+function createRec() {
     const r = new SR();
     r.continuous = true;
     r.interimResults = true;
-    r.lang = 'en-US';
-    r.maxAlternatives = 1;
+    // Try to detect system language or fallback to en-US
+    r.lang = navigator.language || 'en-US'; 
+    r.maxAlternatives = 3; // Allow more alternatives for better matching
 
-    r.onstart = () => {
+
+    r.onstart = () => { _clearForceTimer(); _interimTranscript = '';
       console.log('Speech Recognition started');
       _voicePaused = false;
       voiceState = 'listening';
@@ -312,7 +334,7 @@ function setupVoice() {
       }
     };
 
-    r.onerror = (e) => {
+    r.onerror = (e) => { _clearForceTimer();
       console.warn('Voice error:', e.error); _voicePaused = false;
       if (e.error === 'not-allowed') {
         stopVoiceMode();
@@ -321,7 +343,7 @@ function setupVoice() {
       if (_voiceActive && !_voicePaused) setTimeout(() => _restartRec(), 800);
     };
 
-    r.onend = () => {
+    r.onend = () => { _clearForceTimer();
       console.log('Speech Recognition ended');
       if (_voiceActive && !_voicePaused) {
         setTimeout(() => _restartRec(), 500);
