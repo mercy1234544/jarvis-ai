@@ -277,8 +277,9 @@ function setupVoice() {
           // Prevent instant loop: only restart if mic ran for at least 1 second
           const elapsed = Date.now() - recStartTime;
           const minRunTime = 1000;
-          const delay = gotResult ? 600 : Math.max(800, minRunTime - elapsed + 200);
-          setTimeout(resumeListening, delay);
+          const delay = gotResult ? 600 : Math.max(1000, minRunTime - elapsed + 300);
+          if (_resumeTimer) clearTimeout(_resumeTimer);
+          _resumeTimer = setTimeout(resumeListening, delay);
         }
       }
       // If voiceState is 'processing' or 'speaking', resumeListening will be called by speakAndResume
@@ -308,8 +309,9 @@ function setupVoice() {
       if (voiceState === 'listening') voiceState = 'idle';
       if (voiceContinuous && voiceState === 'idle') {
         // For no-speech / aborted errors, wait longer before restarting
-        const delay = (e.error === 'no-speech' || e.error === 'aborted') ? 1200 : 600;
-        setTimeout(resumeListening, delay);
+        const delay = (e.error === 'no-speech' || e.error === 'aborted') ? 1500 : 800;
+        if (_resumeTimer) clearTimeout(_resumeTimer);
+        _resumeTimer = setTimeout(resumeListening, delay);
       }
     };
 
@@ -350,18 +352,21 @@ function loadPreferredVoice() {
   setTimeout(pick, 2000);
 }
 
+let _resumeTimer = null;
 function resumeListening() {
   if (!voiceContinuous) return;
   if (voiceState === 'processing' || voiceState === 'speaking') return;
   if (voiceState === 'listening') return;
-  // Recreate recognizer each time to avoid Chromium's "already started" bug
+  // Cancel any pending resume to prevent double-starts
+  if (_resumeTimer) { clearTimeout(_resumeTimer); _resumeTimer = null; }
+  // Recreate recognizer each time to avoid Chromium's 'already started' bug
   if (window._buildVoiceRec) voiceRec = window._buildVoiceRec();
   voiceState = 'idle';
   try {
     voiceRec.start();
   } catch(e) {
-    console.warn('resumeListening error:', e);
-    setTimeout(resumeListening, 800);
+    console.warn('resumeListening error:', e.message);
+    if (voiceContinuous) _resumeTimer = setTimeout(resumeListening, 1500);
   }
 }
 
@@ -388,8 +393,12 @@ function startMicOnce() {
 function activateContinuousVoice() {
   voiceContinuous = true;
   voiceState = 'idle';
-  if (window._buildVoiceRec) voiceRec = window._buildVoiceRec();
-  try { voiceRec.start(); } catch(e) { console.warn('continuous start:', e); }
+  // Small delay before first start — lets the browser settle permissions
+  setTimeout(() => {
+    if (!voiceContinuous) return;
+    if (window._buildVoiceRec) voiceRec = window._buildVoiceRec();
+    try { voiceRec.start(); } catch(e) { console.warn('continuous start:', e); }
+  }, 300);
 }
 
 function deactivateContinuousVoice() {
@@ -407,7 +416,7 @@ function speakAndResume(text, cb) {
   speak(text, () => {
     voiceState = 'idle';
     if (cb) cb();
-    if (voiceContinuous) setTimeout(resumeListening, 700);
+    if (voiceContinuous) { if (_resumeTimer) clearTimeout(_resumeTimer); _resumeTimer = setTimeout(resumeListening, 700); }
   });
 }
 
@@ -621,8 +630,10 @@ async function handleSysCmd(text) {
     }
   }
 
-  if (lc.startsWith('search for ') || lc.startsWith('google ') || lc.startsWith('search ')) {
-    const q = text.replace(/^(search for|google|search)\s+/i, '').trim();
+  // Web search — catch many natural language forms
+  const searchMatch = lc.match(/^(?:search for|google|search|look up|look up a|find|find me|show me|what is|what are|who is|who are|tell me about)\s+(.+)$/);
+  if (searchMatch) {
+    const q = searchMatch[1].trim();
     await runCmd('search for ' + q);
     return { handled:true, response:'Searching Google for "' + q + '", Sir.' };
   }
@@ -771,10 +782,14 @@ function fallback(text) {
 
 function aiErrMsg(m, provider) {
   if (!m) return 'I encountered an unknown error, Sir.';
-  if (m.includes('401') || m.includes('invalid_api_key') || m.includes('API_KEY')) return 'Authentication failed, Sir. Please verify your API key in Settings.';
+  if (m.includes('401') || m.includes('invalid_api_key') || m.includes('API_KEY') || m.includes('Unauthorized')) return 'Authentication failed, Sir. Please verify your API key in Settings.';
   if (m.includes('429')) return 'Rate limit reached, Sir. Please wait a moment before trying again.';
-  if (m.includes('Ollama') || m.includes('localhost')) return 'Cannot connect to Ollama, Sir. Please ensure Ollama is running on your machine and the model is downloaded.';
-  if (m.includes('fetch') || m.includes('network') || m.includes('Failed to fetch')) return 'I cannot reach the AI core, Sir. Please check your internet connection.';
+  // Ollama-specific: connection refused or localhost errors
+  if (provider === 'ollama' || m.includes('localhost') || m.includes('11434') || m.includes('ERR_CONNECTION_REFUSED') || m.includes('Ollama')) {
+    return 'Cannot connect to Ollama, Sir. Please ensure Ollama is running — open a terminal and run: ollama serve';
+  }
+  // Generic network error only for non-local providers
+  if (m.includes('Failed to fetch') || m.includes('ERR_INTERNET_DISCONNECTED') || m.includes('net::ERR')) return 'I cannot reach the AI core, Sir. Please check your internet connection.';
   return 'I encountered a technical difficulty, Sir. ' + m.substring(0, 80);
 }
 
