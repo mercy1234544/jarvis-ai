@@ -160,6 +160,21 @@ function sendStats() {
 function sysCmd(cmd) {
   return new Promise(resolve => {
     const lc = cmd.toLowerCase().trim();
+    // Web Navigation Logic
+    if (lc.startsWith('open ') && (lc.includes('.com') || lc.includes('.org') || lc.includes('.net') || lc.includes('.io') || lc.includes('.gov') || lc.includes('.edu'))) {
+      let url = lc.split('open ')[1].trim();
+      if (!url.startsWith('http')) url = 'https://' + url;
+      shell.openExternal(url);
+      return resolve({ ok: true });
+    }
+    if (lc.startsWith('go to ') || lc.startsWith('find the website for ') || lc.startsWith('search for ')) {
+      let query = lc.replace('go to ', '').replace('find the website for ', '').replace('search for ', '').trim();
+      if (query) {
+        const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}&btnI=I%27m+Feeling+Lucky`;
+        shell.openExternal(searchUrl);
+        return resolve({ ok: true });
+      }
+    }
     const p  = process.platform;
 
     if(lc.startsWith('search for ') || lc.startsWith('google ')) {
