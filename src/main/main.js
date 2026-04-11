@@ -235,6 +235,55 @@ function setupIPC() {
   ipcMain.handle('run-cmd', async (_, cmd) => await sysCmd(cmd));
   ipcMain.on('open-url',     (_, url) => shell.openExternal(url));
   ipcMain.on('check-update', () => runUpdate(true));
+  
+  // Web Navigation Handler
+  ipcMain.handle('open-website', async (_, siteName) => {
+    const lower = siteName.toLowerCase();
+    const siteMap = {
+      'google': 'https://www.google.com',
+      'youtube': 'https://www.youtube.com',
+      'github': 'https://www.github.com',
+      'twitter': 'https://www.twitter.com',
+      'facebook': 'https://www.facebook.com',
+      'reddit': 'https://www.reddit.com',
+      'amazon': 'https://www.amazon.com',
+      'netflix': 'https://www.netflix.com',
+      'bmw': 'https://www.bmw.com',
+      'tesla': 'https://www.tesla.com',
+      'apple': 'https://www.apple.com',
+      'microsoft': 'https://www.microsoft.com',
+    };
+    
+    let url = siteMap[lower];
+    if (!url) {
+      if (lower.includes('.')) {
+        url = lower.startsWith('http') ? lower : 'https://' + lower;
+      } else {
+        url = 'https://www.google.com/search?q=' + encodeURIComponent(siteName);
+      }
+    }
+    
+    shell.openExternal(url);
+    return { ok: true };
+  });
+  
+  // Command History Handlers
+  let commandHistory = [];
+  const HISTORY_FILE = path.join(USER_DATA, 'command-history.json');
+  
+  try {
+    if (fs.existsSync(HISTORY_FILE)) {
+      commandHistory = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+    }
+  } catch(e) {}
+  
+  ipcMain.handle('get-history', () => commandHistory);
+  ipcMain.on('save-history', (_, history) => {
+    commandHistory = history;
+    try {
+      fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
+    } catch(e) {}
+  });
 }
 
 // ── Boot ─────────────────────────────────────────────────────
